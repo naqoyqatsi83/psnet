@@ -2,12 +2,12 @@
 name = "psnet"
 version = "1.0.0"
 edition = "2021"
-description = "A beautiful real-time TUI network monitor for Windows — 9 tabs, GeoIP, device discovery, firewall, topology & more"
+description = "A beautiful real-time TUI network monitor — 9 tabs, GeoIP, device discovery, firewall, topology & more"
 license = "MIT"
 repository = "https://github.com/marlocarlo/psnet"
 homepage = "https://github.com/marlocarlo/psnet"
 readme = "README.md"
-keywords = ["network", "monitor", "tui", "windows", "terminal"]
+keywords = ["network", "monitor", "tui", "terminal", "cross-platform"]
 categories = ["command-line-utilities", "network-programming"]
 exclude = [".github/", "choco/", "target/", "image.png", ".playwright-mcp/"]
 
@@ -21,7 +21,11 @@ serde_json = "1"
 dirs = "5"
 maxminddb = "0.24"
 dns-lookup = "2"
+pcap = "0.10"
+# Optional: systemd-resolved DNS cache via DBus (feature-gated)
+dbus = { version = "0.9", optional = true }
 
+procfs = "0.15"
 [profile.release]
 opt-level = 3
 lto = true

@@ -109,12 +109,12 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
             let port = conn.remote_port.unwrap_or(conn.local_port);
             let proto = conn.proto.label();
             let svc_name = port_service_name(port);
-            let service_str = if let Some(svc) = svc_name {
+            let service_str = if let Some(ref svc) = svc_name {
                 format!("{}/{}", svc, proto)
             } else {
                 format!("{}/{}", port, proto)
             };
-            let service_color = match svc_name {
+            let service_color = match svc_name.as_deref() {
                 Some("HTTPS") => Color::Rgb(80, 200, 120),
                 Some("HTTP") => Color::Rgb(220, 180, 60),
                 Some("DNS") => Color::Rgb(100, 180, 255),

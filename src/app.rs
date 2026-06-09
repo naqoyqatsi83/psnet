@@ -19,6 +19,7 @@ use crate::network::networks::NetworksScanner;
 use crate::network::protocols::ProtocolTracker;
 use crate::network::scanner::NetworkScanner;
 use crate::network::servers::ServersScanner;
+use crate::types::ListenProto;
 use crate::network::sniffer::PacketSniffer;
 use crate::network::speed::get_network_bytes;
 use crate::network::system_monitor::SystemMonitor;
@@ -403,7 +404,7 @@ impl App {
                         // Try to get client IP from DHCP packet fields, fall back to source IP
                         let client_ip = crate::network::hostnames::dhcp_client_ip(&pkt.raw_payload)
                             .or_else(|| match pkt.src_ip {
-                                IpAddr::V4(v4) if !v4.is_unspecified() && !v4.is_broadcast() => Some(v4),
+                                IpAddr::V4(v4) if !v4.is_unspecified() && !v4.is_broadcast() => Some(IpAddr::from(v4)),
                                 _ => None,
                             });
                         if let Some(ip) = client_ip {
@@ -969,27 +970,30 @@ impl App {
                     let has_tls = s.details.contains("TLS: yes");
                     Some(DetailKind::Server {
                         kind_label: s.display_name(),
-                        kind_icon: s.server_kind.icon().to_string(),
-                        category: s.server_kind.category().label().to_string(),
+                        kind_icon: s.display_icon().to_string(),
+                        category: s.server_kind.category().to_string(),
                         port: s.port,
-                        proto: s.proto.label().to_string(),
+                        proto: match s.proto {
+                            ListenProto::Tcp => "tcp".to_string(),
+                            ListenProto::Udp => "udp".to_string(),
+                        },
                         bind_addr: s.bind_addr.to_string(),
                         pid: s.pid,
                         process_name: s.process_name.clone(),
                         exe_path: s.exe_path.clone(),
                         cmdline: s.cmdline.clone(),
-                        product_name: s.product_name.clone(),
-                        company_name: s.company_name.clone(),
+                        product_name: s.product_name.clone().unwrap_or_default(),
+                        company_name: s.company_name.clone().unwrap_or_default(),
                         version: s.version.clone().unwrap_or_default(),
                         http_title: s.http_title.clone().unwrap_or_default(),
                         banner: s.banner.clone().unwrap_or_default(),
                         response_headers: s.response_headers.clone(),
                         active_connections: active,
-                        first_seen: s.first_seen.format("%H:%M:%S").to_string(),
+                        first_seen: s.first_seen.map(|dt| dt.format("%H:%M:%S").to_string()).unwrap_or_default(),
                         is_responsive: s.is_responsive,
                         tls_detected: has_tls,
-                        category_color: s.server_kind.category().color(),
-                        detected_techs: s.detected_techs.iter().map(|t| (t.name.clone(), t.category.clone(), t.version.clone())).collect(),
+                        category_color: s.server_kind.color(),
+                        detected_techs: s.detected_techs.iter().map(|t| (t.name.clone(), t.category.clone(), t.version.clone().unwrap_or_default())).collect(),
                     })
                 } else {
                     None

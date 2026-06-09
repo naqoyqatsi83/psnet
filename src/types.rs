@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 
-use chrono::NaiveTime;
+use chrono::{NaiveTime, NaiveDateTime};
 use serde::{Serialize, Deserialize};
 
 // ─── DNS cache ───────────────────────────────────────────────────────────────
@@ -10,7 +10,7 @@ pub type DnsCache = HashMap<IpAddr, Option<String>>;
 
 // ─── Protocol ────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConnProto {
     Tcp,
     Udp,
@@ -171,6 +171,108 @@ impl SpeedHistory {
         }
         if self.upload.len() > self.max_points {
             self.upload.pop_front();
+        }
+    }
+}
+
+impl ServerCategory {
+    pub fn category(&self) -> String {
+        match self {
+            Self::Ftp => "File Transfer",
+            Self::Ssh => "Remote Access",
+            Self::Telnet => "Remote Access",
+            Self::Smtp => "Mail",
+            Self::Dns => "Name Resolution",
+            Self::Http | Self::Https => "Web",
+            Self::Pop3 | Self::Imap => "Mail",
+            Self::Mysql | Self::Postgres => "Database",
+            Self::Redis => "Cache",
+            Self::Elasticsearch => "Search",
+            Self::Mdns => "Name Resolution",
+            Self::Dhcp => "Network Services",
+            Self::Ntp => "Network Services",
+            Self::Custom => "Custom",
+            Self::Unknown => "Unknown",
+        }.to_string()
+    }
+
+    pub fn description(&self) -> String {
+        match self {
+            Self::Ftp => "File Transfer Protocol server",
+            Self::Ssh => "Secure Shell server",
+            Self::Telnet => "Telnet remote access",
+            Self::Smtp => "Mail transfer agent",
+            Self::Dns => "Domain Name System",
+            Self::Http => "HTTP web server",
+            Self::Https => "HTTPS web server",
+            Self::Pop3 => "Post Office Protocol",
+            Self::Imap => "Internet Message Access Protocol",
+            Self::Mysql => "MySQL database",
+            Self::Postgres => "PostgreSQL database",
+            Self::Redis => "Redis cache/store",
+            Self::Elasticsearch => "Elasticsearch search engine",
+            Self::Mdns => "Multicast DNS",
+            Self::Dhcp => "DHCP server",
+            Self::Ntp => "Network Time Protocol",
+            Self::Custom => "Custom service",
+            Self::Unknown => "Unknown service",
+        }.to_string()
+    }
+}
+
+impl ListeningPort {
+    pub fn display_icon(&self) -> &str {
+        match self.server_kind {
+            ServerCategory::Ftp => "📁",
+            ServerCategory::Ssh => "🔐",
+            ServerCategory::Telnet => "☎",
+            ServerCategory::Smtp => "✉",
+            ServerCategory::Dns => "🌍",
+            ServerCategory::Http => "🌐",
+            ServerCategory::Https => "🔒",
+            ServerCategory::Pop3 => "📥",
+            ServerCategory::Imap => "📧",
+            ServerCategory::Mysql => "🗄",
+            ServerCategory::Postgres => "🐘",
+            ServerCategory::Redis => "⚡",
+            ServerCategory::Elasticsearch => "🔎",
+            ServerCategory::Mdns => "🖧",
+            ServerCategory::Dhcp => "🌐",
+            ServerCategory::Ntp => "🕐",
+            ServerCategory::Custom => "⚙",
+            ServerCategory::Unknown => "❓",
+        }
+    }
+
+    pub fn display_name(&self) -> String {
+        match self.server_kind {
+            ServerCategory::Custom => self.process_name.clone(),
+            ServerCategory::Unknown => self.process_name.clone(),
+            _ => self.server_kind.to_string(),
+        }
+    }
+
+    pub fn display_description(&self) -> String {
+        let mut parts = Vec::new();
+        parts.push(format!("Port {} ({})", self.port, self.proto_label()));
+        if let Some(path) = &self.process_path {
+            if !path.is_empty() {
+                parts.push(path.clone());
+            }
+        }
+        if !self.user.is_empty() {
+            parts.push(format!("as {}", self.user));
+        }
+        if let Some(version) = &self.version {
+            parts.push(version.clone());
+        }
+        parts.join(" ")
+    }
+
+    fn proto_label(&self) -> &str {
+        match self.proto {
+            ListenProto::Tcp => "TCP",
+            ListenProto::Udp => "UDP",
         }
     }
 }
@@ -875,4 +977,115 @@ pub enum DetailKind {
         category_color: (u8, u8, u8),
         detected_techs: Vec<(String, String, String)>, // (name, category, version)
     },
+}
+// Server-specific types for Linux port
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenProto {
+    Tcp,
+    Udp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerCategory {
+    Ftp,
+    Ssh,
+    Telnet,
+    Smtp,
+    Dns,
+    Http,
+    Https,
+    Pop3,
+    Imap,
+    Mysql,
+    Postgres,
+    Redis,
+    Elasticsearch,
+    Mdns,
+    Dhcp,
+    Ntp,
+    Custom,
+    Unknown,
+}
+
+impl ServerCategory {
+    pub fn color(&self) -> (u8, u8, u8) {
+        match self {
+            ServerCategory::Ftp => (0, 200, 255),
+            ServerCategory::Ssh => (0, 255, 0),
+            ServerCategory::Telnet => (255, 165, 0),
+            ServerCategory::Smtp => (255, 105, 180),
+            ServerCategory::Dns => (255, 255, 0),
+            ServerCategory::Http => (0, 150, 255),
+            ServerCategory::Https => (0, 100, 255),
+            ServerCategory::Pop3 => (150, 255, 150),
+            ServerCategory::Imap => (150, 150, 255),
+            ServerCategory::Mysql => (0, 180, 180),
+            ServerCategory::Postgres => (0, 180, 180),
+            ServerCategory::Redis => (255, 50, 50),
+            ServerCategory::Elasticsearch => (200, 100, 200),
+            ServerCategory::Mdns => (255, 150, 150),
+            ServerCategory::Dhcp => (100, 255, 100),
+            ServerCategory::Ntp => (200, 200, 200),
+            ServerCategory::Custom => (180, 180, 180),
+            ServerCategory::Unknown => (120, 120, 120),
+        }
+    }
+}
+
+impl std::fmt::Display for ServerCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ServerCategory::Ftp => write!(f, "FTP"),
+            ServerCategory::Ssh => write!(f, "SSH"),
+            ServerCategory::Telnet => write!(f, "Telnet"),
+            ServerCategory::Smtp => write!(f, "SMTP"),
+            ServerCategory::Dns => write!(f, "DNS"),
+            ServerCategory::Http => write!(f, "HTTP"),
+            ServerCategory::Https => write!(f, "HTTPS"),
+            ServerCategory::Pop3 => write!(f, "POP3"),
+            ServerCategory::Imap => write!(f, "IMAP"),
+            ServerCategory::Mysql => write!(f, "MySQL"),
+            ServerCategory::Postgres => write!(f, "PostgreSQL"),
+            ServerCategory::Redis => write!(f, "Redis"),
+            ServerCategory::Elasticsearch => write!(f, "Elasticsearch"),
+            ServerCategory::Mdns => write!(f, "mDNS"),
+            ServerCategory::Dhcp => write!(f, "DHCP"),
+            ServerCategory::Ntp => write!(f, "NTP"),
+            ServerCategory::Custom => write!(f, "Custom"),
+            ServerCategory::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DetectedTech {
+    pub name: String,
+    pub category: String,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ListeningPort {
+    pub proto: ListenProto,
+    pub port: u16,
+    pub pid: u32,
+    pub process_name: String,
+    pub process_path: Option<String>,
+    pub cmdline: String,
+    pub server_kind: ServerCategory,
+    pub bind_addr: std::net::IpAddr,
+    pub user: String,
+    pub version: Option<String>,
+    pub http_title: Option<String>,
+    pub description: String,
+    pub is_responsive: bool,
+    pub details: String,
+    pub exe_path: String,
+    pub detected_techs: Vec<DetectedTech>,
+    pub banner: Option<String>,
+    pub product_name: Option<String>,
+    pub company_name: Option<String>,
+    pub response_headers: Vec<(String, String)>,
+    pub first_seen: Option<NaiveDateTime>,
 }

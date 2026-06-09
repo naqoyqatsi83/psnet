@@ -311,7 +311,7 @@ fn draw_device_detail(f: &mut Frame, area: Rect, device: &crate::types::LanDevic
     // ─── DHCP Info ───
     if let std::net::IpAddr::V4(v4) = device.ip {
         if let Ok(cache) = app.network_scanner.dhcp_hostnames.lock() {
-            if let Some(dhcp_name) = cache.get(&v4) {
+            if let Some(dhcp_name) = cache.get(&std::net::IpAddr::from(v4)) {
                 lines.push(section_divider("DHCP"));
                 lines.push(row("DHCP Hostname", dhcp_name.clone(), Color::Rgb(180, 140, 255)));
             }

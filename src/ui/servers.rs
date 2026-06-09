@@ -11,7 +11,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::network::servers::types::{ListenProto, ListeningPort, ServerCategory};
+use crate::types::{ListenProto, ListeningPort, ServerCategory};
 
 // ─── Theme ──────────────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ enum Row<'a> {
 
 pub fn draw_servers(f: &mut Frame, area: Rect, app: &App) {
     let sc = &app.servers_scanner;
-    let all = &sc.servers;
+    let all = sc.get_listening_ports();
     let filtered = sc.filtered_servers();
 
     // Connection counts per port
@@ -618,13 +618,8 @@ fn render_card_top(f: &mut Frame, area: Rect, s: &ListeningPort, sel: bool, conn
             Style::default().fg(cc),
         ));
     }
-
-    let bg = if sel { SEL_BG }
-    else if !s.is_responsive { UNRESPONSIVE_BG }
-    else { CARD_BG };
-
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
         area,
     );
 }
@@ -633,7 +628,7 @@ fn render_card_top(f: &mut Frame, area: Rect, s: &ListeningPort, sel: bool, conn
 
 fn render_card_bot(f: &mut Frame, area: Rect, s: &ListeningPort, sel: bool, w: usize) {
     let cat = s.server_kind.category();
-    let cc = cat_color(&cat);
+    let cc = cat_color(&s.server_kind);
 
     let mut spans: Vec<Span> = Vec::new();
 
@@ -645,7 +640,7 @@ fn render_card_bot(f: &mut Frame, area: Rect, s: &ListeningPort, sel: bool, w: u
     }
 
     // Category tag (colored pill)
-    let cat_label = cat.label();
+    let cat_label = cat;
     spans.push(Span::styled(
         format!(" {} ", cat_label),
         Style::default().fg(cc),
@@ -685,7 +680,7 @@ fn render_card_bot(f: &mut Frame, area: Rect, s: &ListeningPort, sel: bool, w: u
     else { CARD_ALT };
 
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(BG)),
         area,
     );
 }
@@ -762,7 +757,7 @@ fn draw_detail(
         l3.push(Span::styled("Tech: ", Style::default().fg(LABEL)));
         for (i, t) in s.detected_techs.iter().take(6).enumerate() {
             if i > 0 { l3.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM))); }
-            let label = if t.version.is_empty() { t.name.clone() } else { format!("{}/{}", t.name, t.version) };
+            let label = match &t.version { Some(v) if !v.is_empty() => format!("{}/{}", t.name, v), _ => t.name.clone(), };
             l3.push(Span::styled(label, Style::default().fg(Color::Rgb(160, 145, 230))));
         }
         if s.detected_techs.len() > 6 {
