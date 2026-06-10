@@ -51,6 +51,15 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/tmp/aarch64-sysroot" >> $GITHUB_ENV
 
+      - name: Verify ARM64 sysroot
+        if: matrix.arch.cross_prefix != ''
+        run: |
+          echo "=== libpcap .pc file ==="
+          find /tmp/aarch64-sysroot -name "libpcap*" 2>/dev/null
+          cat /tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig/libpcap.pc 2>/dev/null || echo "No .pc file found"
+          echo "=== libraries ==="
+          find /tmp/aarch64-sysroot -name "libpcap*" -type f 2>/dev/null
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -70,6 +79,7 @@ jobs:
         run: |
           if [ -n "${{ matrix.arch.cross_prefix }}" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.arch.cross_prefix }}gcc
+            export LIBRARY_PATH=/tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu:${LIBRARY_PATH:-}
             cargo build --release --target ${{ matrix.arch.rust_target }}
           else
             cargo build --release --target ${{ matrix.arch.rust_target }}
