@@ -61,10 +61,9 @@ jobs:
               rust:latest bash -c "
                 apt-get update -qq && apt-get install -y -qq libpcap-dev > /dev/null
                 cargo build --release
-                cp target/release/psnet /work/target/release/psnet-aarch64
               "
-            mkdir -p target/${{ matrix.arch.rust_target }}/release
-            cp target/release/psnet-aarch64 target/${{ matrix.arch.rust_target }}/release/psnet
+            sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
+            sudo cp ${{ github.workspace }}/target/release/psnet target/${{ matrix.arch.rust_target }}/release/psnet
           else
             cargo build --release --target ${{ matrix.arch.rust_target }}
           fi
