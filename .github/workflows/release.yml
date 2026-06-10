@@ -40,16 +40,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
           rustup target add aarch64-unknown-linux-gnu
-          # Download ARM64 libpcap-dev + libpcap0.8 from ports.ubuntu.com
+          # Download ARM64 libraries from ports.ubuntu.com (security.ubuntu.com doesn't serve ARM64)
           mkdir -p /tmp/aarch64-sysroot
-          PCAP_PAGE=$(wget -qO- 'http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/')
-          DEV_DEB=$(echo "$PCAP_PAGE" | grep -oP 'libpcap0\.8-dev_[a-z0-9.~-]+_arm64\.deb' | sort -V | tail -1)
-          RUNTIME_DEB=$(echo "$PCAP_PAGE" | grep -oP 'libpcap0\.8_[a-z0-9.~-]+_arm64\.deb' | sort -V | tail -1)
-          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/$DEV_DEB" -O /tmp/libpcap-dev-arm64.deb
-          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/$RUNTIME_DEB" -O /tmp/libpcap-runtime-arm64.deb
-          cd /tmp/aarch64-sysroot && dpkg-deb -x /tmp/libpcap-dev-arm64.deb . && dpkg-deb -x /tmp/libpcap-runtime-arm64.deb .
-          # Ensure the .so symlink points to an existing file
-          find /tmp/aarch64-sysroot -name "libpcap*" -type f 2>/dev/null
+          for pkg in libpcap0.8-dev libpcap0.8 libdbus-1-3 libdbus-1-dev; do
+            page=$(wget -qO- "http://ports.ubuntu.com/ubuntu-ports/pool/main/${pkg:0:4}/${pkg}/")
+            deb=$(echo "$page" | grep -oP "${pkg}_[a-z0-9.~-]+_arm64\.deb" | sort -V | tail -1)
+            wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/${pkg:0:4}/${pkg}/$deb" -O "/tmp/${pkg}_arm64.deb"
+            cd /tmp/aarch64-sysroot && dpkg-deb -x "/tmp/${pkg}_arm64.deb" .
+          done
           echo "PKG_CONFIG_PATH=/tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/tmp/aarch64-sysroot" >> $GITHUB_ENV
@@ -74,7 +72,7 @@ jobs:
         run: |
           if [ -n "${{ matrix.arch.cross_prefix }}" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.arch.cross_prefix }}gcc
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-L /tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu"
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-L /tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu -C link-args=-Wl,-rpath-link,/tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu"
             cargo build --release --target ${{ matrix.arch.rust_target }}
           else
             cargo build --release --target ${{ matrix.arch.rust_target }}
