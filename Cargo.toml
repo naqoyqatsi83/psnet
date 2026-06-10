@@ -25,6 +25,7 @@ pcap = "0.10"
 # Optional: systemd-resolved DNS cache via DBus (feature-gated)
 dbus = { version = "0.9", optional = true }
 
+nix = { version = "0.29", features = ["net"] }
 procfs = "0.15"
 [profile.release]
 opt-level = 3
