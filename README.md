@@ -369,6 +369,10 @@ This is a **Linux port** of the original [psnet](https://github.com/psmux/psnet)
 > [Claude Code](https://claude.ai/code) — an AI coding agent that ported the
 > entire Windows codebase to Linux autonomously. The human just pressed `n`
 > to cycle interfaces and drank coffee ☕.
+>
+> ⚠️ **No human takes responsibility for any issues, bugs, or network
+> configurations you may encounter.** This code was written by an AI that
+> doesn't own a computer. Use at your own risk. 😅
 
 ---
 
