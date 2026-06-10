@@ -39,7 +39,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-          rustup target add aarch64-unknown-linux-gnu 2>&1 || (rustup update 2>&1 && rustup target add aarch64-unknown-linux-gnu 2>&1)
+          rustup update
+          rustup target add aarch64-unknown-linux-gnu
           # Download ARM64 libraries from ports.ubuntu.com (security.ubuntu.com doesn't serve ARM64)
           mkdir -p /tmp/aarch64-sysroot
           for pkg in libpcap0.8-dev libpcap0.8 libdbus-1-3 libdbus-1-dev; do
