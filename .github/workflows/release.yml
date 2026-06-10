@@ -38,27 +38,22 @@ jobs:
         if: matrix.arch.cross_prefix != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
           rustup target add aarch64-unknown-linux-gnu
-          # Download and extract ARM64 libpcap without multi-arch apt
-          # (security.ubuntu.com doesn't serve ARM64 packages)
+          # Download ARM64 libpcap-dev + libpcap0.8 from ports.ubuntu.com
           mkdir -p /tmp/aarch64-sysroot
           PCAP_PAGE=$(wget -qO- 'http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/')
-          PCAP_DEV_DEB=$(echo "$PCAP_PAGE" | grep -oP 'libpcap0\.8-dev_[a-z0-9.~-]+_arm64\.deb' | sort -V | tail -1)
-          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/$PCAP_DEV_DEB" -O /tmp/libpcap-dev-arm64.deb
-          dpkg-deb -x /tmp/libpcap-dev-arm64.deb /tmp/aarch64-sysroot
+          DEV_DEB=$(echo "$PCAP_PAGE" | grep -oP 'libpcap0\.8-dev_[a-z0-9.~-]+_arm64\.deb' | sort -V | tail -1)
+          RUNTIME_DEB=$(echo "$PCAP_PAGE" | grep -oP 'libpcap0\.8_[a-z0-9.~-]+_arm64\.deb' | sort -V | tail -1)
+          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/$DEV_DEB" -O /tmp/libpcap-dev-arm64.deb
+          wget -q "http://ports.ubuntu.com/ubuntu-ports/pool/main/libp/libpcap/$RUNTIME_DEB" -O /tmp/libpcap-runtime-arm64.deb
+          cd /tmp/aarch64-sysroot && dpkg-deb -x /tmp/libpcap-dev-arm64.deb . && dpkg-deb -x /tmp/libpcap-runtime-arm64.deb .
+          # Ensure the .so symlink points to an existing file
+          find /tmp/aarch64-sysroot -name "libpcap*" -type f 2>/dev/null
           echo "PKG_CONFIG_PATH=/tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/tmp/aarch64-sysroot" >> $GITHUB_ENV
-
-      - name: Verify ARM64 sysroot
-        if: matrix.arch.cross_prefix != ''
-        run: |
-          echo "=== libpcap .pc file ==="
-          find /tmp/aarch64-sysroot -name "libpcap*" 2>/dev/null
-          cat /tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu/pkgconfig/libpcap.pc 2>/dev/null || echo "No .pc file found"
-          echo "=== libraries ==="
-          find /tmp/aarch64-sysroot -name "libpcap*" -type f 2>/dev/null
+          echo "PKG_CONFIG_LIBDIR=" >> $GITHUB_ENV
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -79,7 +74,7 @@ jobs:
         run: |
           if [ -n "${{ matrix.arch.cross_prefix }}" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${{ matrix.arch.cross_prefix }}gcc
-            export LIBRARY_PATH=/tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu:${LIBRARY_PATH:-}
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-L /tmp/aarch64-sysroot/usr/lib/aarch64-linux-gnu"
             cargo build --release --target ${{ matrix.arch.rust_target }}
           else
             cargo build --release --target ${{ matrix.arch.rust_target }}
