@@ -364,6 +364,12 @@ A: ~12 MB. This includes 4 embedded databases (GeoIP 7 MB, OUI 1 MB, fingerprint
 
 This is a **Linux port** of the original [psnet](https://github.com/psmux/psnet) by [psmux](https://github.com/psmux). The original codebase was designed for Windows; all Linux-specific implementations were written from scratch using native Linux APIs.
 
+> 🤖 **No humans were harmed (or involved) in the making of this port.**
+> Every line of Linux code was generated, tested, and debugged entirely by
+> [Claude Code](https://claude.ai/code) — an AI coding agent that ported the
+> entire Windows codebase to Linux autonomously. The human just pressed `n`
+> to cycle interfaces and drank coffee ☕.
+
 ---
 
 ## Contributing
