@@ -370,9 +370,9 @@ This is a **Linux port** of the original [psnet](https://github.com/psmux/psnet)
 > entire Windows codebase to Linux autonomously. The human just pressed `n`
 > to cycle interfaces and drank coffee ☕.
 >
-> ⚠️ **No human takes responsibility for any issues, bugs, or network
-> configurations you may encounter.** This code was written by an AI that
-> doesn't own a computer. Use at your own risk. 😅
+> ⚠️ **No human reviewed this code. No human tested this code.**
+> The AI that wrote it cannot be DMCA'd (it doesn't own a computer).
+> You're on your own. Good luck. 🤘
 
 ---
 
