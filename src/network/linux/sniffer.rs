@@ -12,11 +12,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-
 use pcap::{Capture, Device, Packet as PcapPacket};
 use std::process::Command;
-use std::net::SocketAddr;
 
 use crate::types::{ConnProto, PacketDirection, PacketSnippet};
 
@@ -136,21 +133,41 @@ fn sniffer_thread(
     // Find a suitable capture device.
     // Prefer "any" pseudo-device if available, otherwise first non-loopback.
     let device = {
-        match Device::list() {
-            Ok(devices) => {
-                // Try to find "any" device first (Linux only)
+        let devices = match Device::list() {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = set_error(&error_msg, &format!("Failed to list devices: {}", e));
+                active.store(false, Ordering::Relaxed);
+                return;
+            }
+        };
+        // If PSNET_INTERFACE is set and non-empty, use that interface explicitly
+        if let Ok(iface) = std::env::var("PSNET_INTERFACE") {
+            if !iface.is_empty() {
+                if let Some(dev) = devices.iter().find(|d| d.name == iface) {
+                    dev.clone()
+                } else {
+                    let _ = set_error(&error_msg, &format!("Interface '{}' not found", iface));
+                    active.store(false, Ordering::Relaxed);
+                    return;
+                }
+            } else {
+                // Empty PSNET_INTERFACE, auto-select
                 let any = devices.iter().find(|d| d.name == "any");
                 if let Some(dev) = any {
                     dev.clone()
                 } else {
-                    // Find first non-loopback interface, excluding common virtual ones
                     let non_lo = devices.iter().find(|d| {
                         let name = &d.name;
                         !name.contains("lo") &&
                         !name.contains("docker") &&
                         !name.contains("veth") &&
                         !name.contains("br-") &&
-                        !name.contains("virbr")
+                        !name.contains("virbr") &&
+                        !name.contains("bnep") &&
+                        !name.contains("bluetooth") &&
+                        !name.contains("nfqueue") &&
+                        !name.contains("dbus")
                     });
                     if let Some(dev) = non_lo {
                         dev.clone()
@@ -161,16 +178,33 @@ fn sniffer_thread(
                     }
                 }
             }
-            Err(e) => {
-                let _ = set_error(&error_msg, &format!("Failed to list devices: {}", e));
-                active.store(false, Ordering::Relaxed);
-                return;
+        } else {
+            // No PSNET_INTERFACE, auto-select
+            let any = devices.iter().find(|d| d.name == "any");
+            if let Some(dev) = any {
+                dev.clone()
+            } else {
+                let non_lo = devices.iter().find(|d| {
+                    let name = &d.name;
+                    !name.contains("lo") &&
+                    !name.contains("docker") &&
+                    !name.contains("veth") &&
+                    !name.contains("br-") &&
+                    !name.contains("virbr")
+                });
+                if let Some(dev) = non_lo {
+                    dev.clone()
+                } else {
+                    let _ = set_error(&error_msg, "No suitable network interface found");
+                    active.store(false, Ordering::Relaxed);
+                    return;
+                }
             }
         }
     };
 
     // Build capture using builder pattern: promiscuous mode, snaplen 65536, timeout 100ms.
-    let mut cap_builder = match Capture::from_device(device) {
+    let cap_builder = match Capture::from_device(device) {
         Ok(builder) => builder,
         Err(e) => {
             let _ = set_error(&error_msg, &format!("Failed to create capture builder: {}", e));
@@ -179,7 +213,7 @@ fn sniffer_thread(
         }
     };
 
-    let mut cap_builder = cap_builder
+    let cap_builder = cap_builder
         .promisc(true)
         .snaplen(65536)
         .timeout(100);

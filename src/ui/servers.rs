@@ -675,7 +675,7 @@ fn render_card_bot(f: &mut Frame, area: Rect, s: &ListeningPort, sel: bool, w: u
         }
     }
 
-    let bg = if sel { SEL_BG }
+    let _bg = if sel { SEL_BG }
     else if !s.is_responsive { UNRESPONSIVE_BG }
     else { CARD_ALT };
 

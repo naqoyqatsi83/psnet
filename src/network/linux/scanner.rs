@@ -1,4 +1,4 @@
-use chrono::{NaiveTime, Utc};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};

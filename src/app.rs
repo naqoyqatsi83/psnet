@@ -3,6 +3,8 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::process::Command;
+use std::env;
+use pcap::Device;
 
 use crossterm::event::{KeyCode, MouseEventKind};
 use ratatui::layout::Rect;
@@ -167,7 +169,32 @@ pub struct App {
 
 impl App {
     pub fn new(networks: &Networks) -> Self {
-        let (recv, sent, iface) = get_network_bytes(networks);
+        let (recv, sent, _) = get_network_bytes(networks);
+        // Determine the capture interface name (respect PSNET_INTERFACE or best device)
+        let capture_dev_name = if let Ok(iface) = env::var("PSNET_INTERFACE") {
+            iface
+        } else {
+            match Device::list() {
+                Ok(devices) => {
+                    if let Some(dev) = devices.iter().find(|d| d.name == "any") {
+                        dev.name.clone()
+                    } else {
+                        let non_lo = devices.iter().find(|d| {
+                            let name = &d.name;
+                            !name.contains("lo") &&
+                            !name.contains("docker") &&
+                            !name.contains("veth") &&
+                            !name.contains("br-") &&
+                            !name.contains("virbr") &&
+                            !name.contains("bnep") &&
+                            !name.contains("bluetooth")
+                        });
+                        non_lo.map(|d| d.name.clone()).unwrap_or_else(|| "unknown".to_string())
+                    }
+                }
+                Err(_) => "unknown".to_string(),
+            }
+        };
         Self {
             speed_history: SpeedHistory::new(60),
             current_down_speed: 0.0,
@@ -176,7 +203,7 @@ impl App {
             peak_up: 0.0,
             total_down: 0,
             total_up: 0,
-            interface_name: iface,
+            interface_name: capture_dev_name,
             prev_bytes_recv: recv,
             prev_bytes_sent: sent,
             prev_time: Instant::now(),
@@ -304,7 +331,7 @@ impl App {
         }
 
         networks.refresh();
-        let (recv, sent, iface) = get_network_bytes(networks);
+        let (recv, sent, _) = get_network_bytes(networks);
         let now = Instant::now();
         let elapsed = now.duration_since(self.prev_time).as_secs_f64();
 
@@ -344,7 +371,6 @@ impl App {
         self.prev_bytes_recv = recv;
         self.prev_bytes_sent = sent;
         self.prev_time = now;
-        self.interface_name = iface;
 
         // Fetch connections
         self.connections = fetch_connections(&mut self.pid_cache);
@@ -580,6 +606,61 @@ impl App {
         self.tick_count = self.tick_count.wrapping_add(1);
     }
 
+    /// Cycle through available network interfaces by setting `PSNET_INTERFACE` env var.
+    /// Stops current capture, selects next device from `Device::list()`, sets the env var,
+    /// restarts capture, updates `self.interface_name`, and shows a status message.
+    pub fn cycle_interface(&mut self) {
+        // Stop current sniffer
+        self.sniffer.stop();
+
+        // List all pcap devices, filter to real network interfaces only
+        let devices = match Device::list() {
+            Ok(d) => d,
+            Err(_) => {
+                self.status_message = Some(("Failed to list devices".to_string(), std::time::Instant::now()));
+                return;
+            }
+        };
+        let real_devices: Vec<&Device> = devices.iter().filter(|d| {
+            let name = &d.name;
+            name == "any" || (
+                !name.contains("lo") &&
+                !name.contains("docker") &&
+                !name.contains("veth") &&
+                !name.contains("br-") &&
+                !name.contains("virbr") &&
+                !name.contains("bnep") &&
+                !name.contains("bluetooth") &&
+                !name.contains("nfqueue") &&
+                !name.contains("dbus")
+            )
+        }).collect();
+
+        if real_devices.is_empty() {
+            self.status_message = Some(("No suitable network interfaces found".to_string(), std::time::Instant::now()));
+            return;
+        }
+
+        // Find current index among real devices
+        let current = self.interface_name.as_str();
+        let mut next_idx = 0;
+        if let Some(pos) = real_devices.iter().position(|d| d.name == current) {
+            next_idx = (pos + 1) % real_devices.len();
+        }
+
+        let next_dev = real_devices[next_idx];
+        // Set environment variable for new interface
+        let _ = std::env::set_var("PSNET_INTERFACE", &next_dev.name);
+
+        // Update interface name in UI
+        self.interface_name = next_dev.name.clone();
+
+        // Restart sniffer
+        self.sniffer.start();
+
+        // Status message
+        self.status_message = Some((format!("Switched to interface: {}", self.interface_name), std::time::Instant::now()));
+    }
     // ─── DNS resolution ───────────────────────────────────────────────
 
     /// Read DNS cache from OS and apply hostnames to connections.
@@ -922,6 +1003,9 @@ impl App {
             }
             KeyCode::Char('i') | KeyCode::Char('I') => {
                 self.incognito = !self.incognito;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.cycle_interface();
             }
             KeyCode::Enter => {
                 self.open_detail_popup();

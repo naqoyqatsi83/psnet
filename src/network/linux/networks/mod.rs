@@ -1,5 +1,4 @@
 use std::net::Ipv4Addr;
-use std::net::IpAddr;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;

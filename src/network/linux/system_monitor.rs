@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-use std::thread;
 
 #[derive(Debug, Clone)]
 pub enum SystemEvent {

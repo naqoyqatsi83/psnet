@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::types::{ListeningPort, ListenProto, ServerCategory, DetectedTech};
+use crate::types::{ListeningPort, ListenProto, ServerCategory};
 use super::connections::{fetch_connections, get_process_full_path};
 
 pub struct ServersScanner {
