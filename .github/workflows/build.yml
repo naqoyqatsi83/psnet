@@ -8,17 +8,16 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libpcap0.8-dev
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cargo
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
@@ -49,13 +48,13 @@ jobs:
           dpkg-deb --build "$PKG_ROOT" "${{ runner.temp }}/deb/psnet_${VERSION}_amd64.deb"
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: psnet-amd64
           path: target/release/psnet
 
       - name: Upload .deb
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: psnet-amd64.deb
           path: ${{ runner.temp }}/deb/psnet_*.deb
