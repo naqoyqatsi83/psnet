@@ -86,7 +86,10 @@ This is a **Linux port** of the original [psmux/psnet](https://github.com/psmux/
 
 ### 🛡️ Firewall
 - **App-centric firewall management** — see which apps are making connections
-- **Block/Allow per app** — toggle firewall rules directly from the TUI
+- **Per-app block/allow/drop** via nftables (cgroupv2 path matching for granularity)
+- **Three-tier blocking** — cgroupv2 via `socket cgroupv2` → cgroupv2 via `iptables -m cgroup` → UID-based `meta skuid`
+- **Kernel version + privilege checks** — warns when kernel < 4.19 or running without `CAP_NET_ADMIN`
+- **Firewall state persistence** — rules survive restarts via `~/.local/share/psnet/firewall_state.json`
 - **Rule status indicators** — blocked (red), allowed (green), no rule (dim)
 
 ### 📡 Devices (LAN Scanner)
@@ -152,16 +155,21 @@ These are typically pre-installed on all Linux distributions:
 
 - `libpcap` — packet capture
 - `iproute2` — local IP address detection (`ip` command)
-- `iptables` or `nftables` — firewall rule reading
+- `nftables` — firewall management (install via `sudo apt install nftables`)  
+- `iptables` — cgroupv2 fallback for per-app blocking on older nftables versions
 - `libc` — standard C library
 
 ### Root / Non-root
 
-- **Run as root** — all features available including packet capture
-- **Run without root** — packet capture will show a warning; set `CAP_NET_RAW` on the binary to enable it:
+- **Run as root (`sudo psnet`)** — all features available including packet capture and firewall management
+- **Run without root** — packet capture and firewall will show DISABLED warnings; grant capabilities for partial access:
   ```bash
-  sudo setcap cap_net_raw+ep ./target/release/psnet
+  sudo setcap cap_net_raw,cap_net_admin+ep ./target/release/psnet
   ```
+  - `CAP_NET_RAW` enables packet capture (Wire preview)
+  - `CAP_NET_ADMIN` enables firewall management (nftables)
+  - `CAP_SETPCAP + CAP_NET_ADMIN` enables ambient capability inheritance for `ss` process resolution
+- **Capability hints** — the firewall shows an orange status bar message when running unprivileged, telling you exactly what's needed
 
 ### Interface Selection
 
@@ -231,9 +239,14 @@ Press `Tab` / `Shift+Tab` to cycle through them.
 
 | Key | Action |
 |-----|--------|
-| `b` | Block selected app |
-| `a` | Allow selected app |
-| `d` | Delete firewall rule |
+| `Enter` | Open detail popup (Allow / Deny / Drop) |
+| `a` | Toggle ask-to-connect mode |
+| `d` | Toggle default policy (ALLOW-ALL / DENY-ALL) |
+| `x` | Reset all firewall rules |
+| `r` | Refresh rule table from kernel |
+| `1`-`4` | Sort by column |
+| `f` + typing | Live filter |
+| `e` | Export usage CSV |
 
 ---
 
@@ -258,7 +271,9 @@ ARP table enumeration via `/proc/net/arp` and `ip neigh` plus active probing dis
 Uses libpcap (requires root or `CAP_NET_RAW`) to capture packets. Headers are parsed for protocol/port information; payloads are extracted for the Wire preview. Supports promiscuous mode. Interface selection via `n` key or `PSNET_INTERFACE` environment variable.
 
 ### Firewall
-Reads iptables/nftables rules via `iptables-save` command to show per-app firewall rules.
+Manages nftables rules via the `nft` CLI with `CAP_NET_ADMIN`. Creates an `inet psnet-filter` table with `input` and `output` chains. Per-app blocking uses the most precise method available: cgroupv2 path matching via `socket cgroupv2 "<path>"` (nftables >= 1.0.0), falling back to `iptables -m cgroup --path` (kernel >= 4.19), and finally UID-based `meta skuid` for system services with dedicated UIDs.
+
+Reads the kernel version from `/proc/sys/kernel/osrelease` and the process capability set from `/proc/self/status` to warn early when the required features are unavailable — no false sense of control.
 
 ---
 
@@ -281,7 +296,8 @@ psnet/
     │   ├── linux/                # Linux-specific implementations
     │   │   ├── connections.rs    # /proc/net/{tcp,udp}{,6} parser
     │   │   ├── dns.rs            # DNS cache reader + service port map
-    │   │   ├── firewall.rs       # iptables/nftables rule reader
+    │   │   ├── firewall.rs       # FirewallManager — per-app blocking orchestration
+    │   │   ├── nftables.rs       # Raw nftables/iptables shell-out operations
     │   │   ├── hostnames.rs      # Hostname resolution via /etc/hosts + getaddrinfo
     │   │   ├── networks/         # Multi-adapter discovery (sysfs /sys/class/net)
     │   │   ├── scanner.rs        # LAN device scanner (ARP, ip neigh)

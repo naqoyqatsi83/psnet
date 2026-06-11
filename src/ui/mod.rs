@@ -67,18 +67,27 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             3,
         );
         f.render_widget(Clear, toast_area);
+
+        // Use orange styling for permission/firewall warnings.
+        let is_warning = msg.contains("root") || msg.contains("permission")
+            || msg.contains("sudo") || msg.contains("privileg");
+        let (fg, border) = if is_warning {
+            (Color::Rgb(255, 200, 100), Color::Rgb(200, 140, 40))
+        } else {
+            (Color::Rgb(200, 255, 200), Color::Rgb(80, 200, 120))
+        };
         let toast = Paragraph::new(Line::from(vec![
             Span::styled(
                 format!(" {} ", msg),
                 Style::default()
-                    .fg(Color::Rgb(200, 255, 200))
+                    .fg(fg)
                     .add_modifier(Modifier::BOLD),
             ),
         ]))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(80, 200, 120)))
+                .border_style(Style::default().fg(border))
                 .style(Style::default().bg(Color::Rgb(15, 30, 20))),
         );
         f.render_widget(toast, toast_area);

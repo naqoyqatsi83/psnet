@@ -72,6 +72,32 @@ fn draw_firewall_status(f: &mut Frame, area: Rect, app: &App) {
     let status_str = if fw.enabled { "ACTIVE" } else { "DISABLED" };
     let status_color = if fw.enabled { Color::Rgb(80, 200, 120) } else { Color::Rgb(255, 80, 80) };
 
+    let backend_info = if !fw.backend_name.is_empty() {
+        format!(" [{}]", fw.backend_name)
+    } else {
+        String::new()
+    };
+
+    // When disabled, show a hint about what's wrong.
+    let permission_hint: String = if !fw.enabled {
+        if fw.backend_name == "nft not found" {
+            "  !! nftables not installed — install: sudo apt install nftables".into()
+        } else if fw.backend_name == "table init failed" || fw.backend_name == "no write access" {
+            "  !! insufficient permissions — run as root or: sudo setcap cap_net_admin+ep $(which psnet)".into()
+        } else {
+            let kv = crate::network::nftables::kernel_version_str()
+                .unwrap_or_else(|| "?".to_string());
+            let cg_supported = !crate::network::nftables::kernel_too_old_for_cgroup();
+            if !cg_supported {
+                format!("  !! kernel {kv} too old — cgroupv2 path matching needs Linux >= 4.19")
+            } else {
+                format!("  !! cannot enforce per-app rules (kernel {kv})")
+            }
+        }
+    } else {
+        String::new()
+    };
+
     let mode_color = match fw.mode {
         crate::types::FirewallMode::Normal => Color::Rgb(80, 180, 255),
         crate::types::FirewallMode::AskToConnect => Color::Rgb(255, 200, 60),
@@ -85,6 +111,15 @@ fn draw_firewall_status(f: &mut Frame, area: Rect, app: &App) {
         String::new()
     };
 
+    // Apps that can't be blocked (same UID and no cgroup path).
+    let uid_warning = if !fw.unblockable_apps.is_empty() {
+        format!("  |  [!] {} can't block (same UID): {}",
+            fw.unblockable_apps.len(),
+            fw.unblockable_apps.iter().take(2).cloned().collect::<Vec<_>>().join(", "))
+    } else {
+        String::new()
+    };
+
     let (policy_label, policy_color) = if fw.default_deny {
         ("DENY-ALL", Color::Rgb(255, 100, 80))
     } else {
@@ -93,7 +128,11 @@ fn draw_firewall_status(f: &mut Frame, area: Rect, app: &App) {
 
     let line = Line::from(vec![
         Span::styled("  Shield: ", Style::default().fg(Color::Rgb(120, 140, 170))),
-        Span::styled(status_str, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{}{}", status_str, backend_info),
+            Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(permission_hint, Style::default().fg(Color::Rgb(255, 180, 60))),
         Span::styled("  |  Policy: ", Style::default().fg(Color::Rgb(80, 100, 130))),
         Span::styled(policy_label, Style::default().fg(policy_color).add_modifier(Modifier::BOLD)),
         Span::styled("  |  Mode: ", Style::default().fg(Color::Rgb(80, 100, 130))),
@@ -103,6 +142,7 @@ fn draw_firewall_status(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Rgb(90, 110, 140)),
         ),
         Span::styled(pending_str, Style::default().fg(Color::Rgb(255, 200, 60))),
+        Span::styled(uid_warning, Style::default().fg(Color::Rgb(255, 180, 60))),
     ]);
 
     let block = Block::default()
@@ -257,20 +297,72 @@ fn draw_firewall_apps(
     .height(1)
     .style(Style::default().bg(Color::Rgb(18, 25, 42)));
 
+    let fw_disabled = !app.firewall_manager.enabled;
     let rows: Vec<Row> = if display_total == 0 {
-        vec![Row::new(vec![
-            Cell::from(""),
-            Cell::from(Span::styled(
-                "  No apps detected yet. Apps appear here when they make network connections.",
-                Style::default().fg(Color::Rgb(80, 100, 140)),
-            )),
-            Cell::from(""),
-            Cell::from(""),
-            Cell::from(""),
-            Cell::from(""),
-            Cell::from(""),
-        ])
-        .style(Style::default().bg(Color::Rgb(12, 16, 28)))]
+        if fw_disabled {
+            // Show a prominent warning when firewall is disabled.
+            let kv = crate::network::nftables::kernel_version_str()
+                .unwrap_or_else(|| "?".to_string());
+            let reason = match app.firewall_manager.backend_name.as_str() {
+                "nft not found" => "nftables CLI not found (sudo apt install nftables)".to_string(),
+                "no write access" => "process lacks CAP_NET_ADMIN — run as root or setcap".to_string(),
+                other => format!("{other} (kernel {kv})"),
+            };
+            vec![Row::new(vec![
+                Cell::from(Span::styled(
+                    "  !! FIREWALL DISABLED !!",
+                    Style::default().fg(Color::Rgb(255, 60, 60)).add_modifier(Modifier::BOLD),
+                )),
+                Cell::from(Span::styled(
+                    "",
+                    Style::default().fg(Color::Rgb(80, 100, 140)),
+                )),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+            ])
+            .style(Style::default().bg(Color::Rgb(30, 8, 8))),
+            Row::new(vec![
+                Cell::from(""),
+                Cell::from(Span::styled(reason, Style::default().fg(Color::Rgb(255, 160, 60)))),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+            ])
+            .style(Style::default().bg(Color::Rgb(30, 8, 8))),
+            Row::new(vec![
+                Cell::from(""),
+                Cell::from(Span::styled(
+                    "  Rules cannot be managed — fix the issue above to regain control.",
+                    Style::default().fg(Color::Rgb(120, 100, 100)),
+                )),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+            ])
+            .style(Style::default().bg(Color::Rgb(12, 16, 28))),
+        ]
+        } else {
+            vec![Row::new(vec![
+                Cell::from(""),
+                Cell::from(Span::styled(
+                    "  No apps detected yet. Apps appear here when they make network connections.",
+                    Style::default().fg(Color::Rgb(80, 100, 140)),
+                )),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+            ])
+            .style(Style::default().bg(Color::Rgb(12, 16, 28)))]
+        }
     } else {
         display_items
             .iter()
@@ -396,8 +488,26 @@ fn draw_firewall_apps(
             .collect()
     };
 
-    // Bottom hint
-    let hint_line = if let Some((name, _, _)) = apps.get(selected) {
+    // Bottom hint — show disabled warning when fw can't enforce rules.
+    let hint_line = if fw_disabled {
+        Line::from(vec![
+            Span::styled(
+                " FIREWALL DISABLED ",
+                Style::default()
+                    .fg(Color::Rgb(255, 60, 60))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("— ", Style::default().fg(Color::Rgb(255, 120, 80))),
+            Span::styled(
+                match app.firewall_manager.backend_name.as_str() {
+                    "nft not found" => "install nftables (sudo apt install nftables)".to_string(),
+                    "no write access" => "run as root or: sudo setcap cap_net_admin+ep $(which psnet)".to_string(),
+                    other => format!("{other} — rules cannot be modified"),
+                },
+                Style::default().fg(Color::Rgb(255, 160, 60)),
+            ),
+        ])
+    } else if let Some((name, _, _)) = apps.get(selected) {
         Line::from(vec![
             Span::styled(
                 " Enter ",

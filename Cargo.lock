@@ -728,6 +728,7 @@ dependencies = [
  "dbus",
  "dirs",
  "dns-lookup",
+ "libc",
  "maxminddb",
  "nix",
  "pcap",

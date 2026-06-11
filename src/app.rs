@@ -197,7 +197,7 @@ impl App {
                 Err(_) => "unknown".to_string(),
             }
         };
-        Self {
+        let mut app = Self {
             speed_history: SpeedHistory::new(60),
             current_down_speed: 0.0,
             current_up_speed: 0.0,
@@ -290,7 +290,22 @@ impl App {
             bg_dns_servers: Arc::new(Mutex::new(None)),
             bg_dns_ipconfig: Arc::new(Mutex::new(None)),
             status_message: None,
+        };
+
+        // Issue a startup warning when the firewall is disabled due to
+        // insufficient privileges — users should not get a false sense of
+        // control.
+        if !app.firewall_manager.enabled
+            && app.firewall_manager.backend_name == "no write access"
+            && !crate::network::nftables::can_manage_firewall()
+        {
+            app.status_message = Some((
+                "Running without root — firewall rules won't be applied. Run with sudo for full control.".into(),
+                std::time::Instant::now(),
+            ));
         }
+
+        app
     }
 
     /// Fast poll: drain streaming scanner buffers between full ticks.
@@ -569,7 +584,7 @@ impl App {
         }
 
         // Firewall manager tick (periodic rule refresh)
-        self.firewall_manager.tick();
+        self.firewall_manager.tick(&self.connections);
 
         // Ask-to-connect mode: check new processes
         if self.firewall_manager.mode == FirewallMode::AskToConnect {
@@ -934,6 +949,17 @@ impl App {
                                 1 => FirewallAppAction::Deny,
                                 _ => FirewallAppAction::Drop,
                             };
+                            // Don't apply (or close the popup) when the firewall
+                            // can't enforce rules — no false sense of control.
+                            if !self.firewall_manager.enabled {
+                                self.status_message = Some((
+                                    format!("Firewall disabled: {}. Cannot modify rules.",
+                                        self.firewall_manager.backend_name),
+                                    std::time::Instant::now(),
+                                ));
+                                self.detail_popup = None;
+                                return false;
+                            }
                             self.detail_popup = None;
                             self.firewall_manager.apply_action(&name, path.as_deref(), action);
                         } else {
@@ -1127,6 +1153,15 @@ impl App {
                 }
             }
             BottomTab::Firewall => {
+                // Don't open action popup when disabled — no false sense of control.
+                if !self.firewall_manager.enabled {
+                    self.status_message = Some((
+                        format!("Firewall disabled: {}. Cannot modify rules.",
+                            self.firewall_manager.backend_name),
+                        Instant::now(),
+                    ));
+                    return;
+                }
                 // Enter opens combined detail popup with action buttons
                 let apps = self.firewall_app_list_filtered();
                 if apps.is_empty() { return; }
@@ -1206,12 +1241,18 @@ impl App {
             KeyCode::Char('5') => self.toggle_sort(2),
             // Block selected connection's process via firewall
             KeyCode::Char('b') | KeyCode::Char('B') => {
+                if !self.firewall_manager.enabled {
+                    self.status_message = Some((
+                        format!("Firewall disabled: {}. Cannot block apps.",
+                            self.firewall_manager.backend_name),
+                        Instant::now(),
+                    ));
+                    return;
+                }
                 let filtered = self.filtered_connections();
                 if let Some(conn) = filtered.get(self.conn_scroll) {
                     if !conn.process_name.is_empty() && !conn.process_name.starts_with("PID:") {
                         let pid = conn.pid;
-                        // Use the full executable path so Windows Firewall actually matches the rule.
-                        // Falling back to the exe name if the path can't be resolved.
                         let path = crate::network::connections::get_process_full_path(pid)
                             .unwrap_or_else(|| conn.process_name.clone());
                         self.firewall_manager.block_app(&path);
@@ -1408,6 +1449,20 @@ impl App {
     }
 
     fn handle_firewall_key(&mut self, code: KeyCode) {
+        // When disabled, only allow scrolling (already handled by main handler)
+        // and filtering.  Block all action keys — no false sense of control.
+        if !self.firewall_manager.enabled {
+            match code {
+                KeyCode::Backspace => { self.firewall_manager.filter_text.pop(); }
+                KeyCode::Esc => { self.firewall_manager.filter_text.clear(); }
+                KeyCode::Char(c) => {
+                    self.firewall_manager.filter_text.push(c);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('r') | KeyCode::Char('R') => {
                 self.firewall_manager.refresh_rules();

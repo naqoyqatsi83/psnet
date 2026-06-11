@@ -134,19 +134,105 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-/// Raise `CAP_NET_ADMIN` as an ambient capability so child processes
-/// (like `ss -tunp`) inherit the capability and can resolve process
-/// information for all users.
+/// Raise `CAP_NET_ADMIN` and `CAP_NET_RAW` as ambient capabilities so child
+/// processes (like `ss -tunp` and `nft`) inherit them.
 ///
-/// This is a best-effort call — silently ignored when the binary
-/// hasn't been granted the capability or the kernel is too old.
+/// To actually succeed, the binary must have `CAP_SETPCAP` in its effective
+/// set (granted via `setcap cap_setpcap+ep`).  With CAP_SETPCAP we first
+/// use the `capset` syscall to add CAP_NET_ADMIN / CAP_NET_RAW to our
+/// inheritable set, then raise them as ambient via `prctl`.
+///
+/// When `CAP_SETPCAP` is not available, or the kernel doesn't support
+/// ambient capabilities, this is a best-effort no-op and nftables.rs will
+/// fall back to `sudo -n nft`.
 #[cfg(target_os = "linux")]
 fn raise_ambient_cap_net_admin() {
+    // V3 capability format — 2 × 32-bit struct for caps 0-31 and 32-63.
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    const _LINUX_CAPABILITY_VERSION_3: u32 = 0x20080522;
+    const CAP_NET_ADMIN: u32 = 12;
+    const CAP_NET_RAW: u32 = 13;
+    // CAP_SETPCAP is bit 4 in the capability mask
+    const CAP_SETPCAP_BIT: u32 = 4;
+
+    // Check if we have CAP_SETPCAP in our effective set before proceeding.
+    if !capability_bit_from_proc("CapEff", CAP_SETPCAP_BIT) {
+        return;
+    }
+
+    let mut header = CapHeader {
+        version: _LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let mut data = [CapData { effective: 0, permitted: 0, inheritable: 0 }; 2];
+
+    // Read current capabilities via capget(2).
+    // Having CAP_SETPCAP lets us modify the inheritable set and the
+    // permitted set (as long as new values are subsets of the current
+    // permitted set).
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_capget as libc::c_long,
+            &mut header as *mut CapHeader,
+            &mut data as *mut CapData,
+        )
+    };
+    if ret != 0 {
+        return;
+    }
+
+    // Add CAP_NET_ADMIN and CAP_NET_RAW to the inheritable set.
+    // These are already in our permitted set (via setcap +ep).
+    data[0].inheritable |= (1 << CAP_NET_ADMIN) | (1 << CAP_NET_RAW);
+
+    let ret = unsafe {
+        libc::syscall(
+            libc::SYS_capset as libc::c_long,
+            &mut header as *mut CapHeader,
+            &mut data as *mut CapData,
+        )
+    };
+    if ret != 0 {
+        return;
+    }
+
+    // Now both caps are in our permitted AND inheritable sets, satisfying
+    // the requirement for PR_CAP_AMBIENT_RAISE.
     const PR_CAP_AMBIENT: libc::c_int = 47;
     const PR_CAP_AMBIENT_RAISE: libc::c_ulong = 2;
-    const CAP_NET_ADMIN: libc::c_ulong = 12;
 
     unsafe {
-        libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
+        libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN as libc::c_ulong, 0, 0);
+        libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_RAW as libc::c_ulong, 0, 0);
     }
+}
+
+/// Helper: read a single capability bit from `/proc/self/status`.
+/// `bit` is the 0-based capability number (e.g. CAP_SETPCAP = 4).
+#[cfg(target_os = "linux")]
+fn capability_bit_from_proc(field: &str, bit: u32) -> bool {
+    let data = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    for line in data.lines() {
+        if line.starts_with(field) && line.len() > field.len() + 1 {
+            if let Some(hex) = line[field.len()..].trim().split_whitespace().next() {
+                let mask = u64::from_str_radix(hex, 16).unwrap_or(0);
+                if bit < 64 && (mask & (1u64 << bit)) != 0 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }

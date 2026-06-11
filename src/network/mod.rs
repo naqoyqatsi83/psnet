@@ -11,6 +11,8 @@ pub mod servers;
 pub mod networks;
 #[path = "linux/firewall.rs"]
 pub mod firewall;
+#[path = "linux/nftables.rs"]
+pub mod nftables;
 #[path = "linux/dns.rs"]
 pub mod dns;
 #[path = "linux/sniffer.rs"]
