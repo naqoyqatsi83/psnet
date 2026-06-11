@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
@@ -26,6 +27,9 @@ pub struct NetworksScanner {
     last_scan: Option<Instant>,
     pub primary_ip: Option<Ipv4Addr>,
     results_ready: bool,
+    /// Persistent store of known BT devices across scans.
+    /// Devices not seen in the latest scan are marked offline rather than removed.
+    known_bt_devices: Vec<LanDevice>,
 }
 
 impl NetworksScanner {
@@ -38,12 +42,12 @@ impl NetworksScanner {
             last_scan: None,
             primary_ip,
             results_ready: false,
+            known_bt_devices: Vec::new(),
         }
     }
 
     pub fn tick(&mut self) {
         if self.scan_tick == 0 {
-            // Scan immediately on first tick
             self.start_scan();
         }
         self.scan_tick += 1;
@@ -84,9 +88,9 @@ impl NetworksScanner {
     /// - `bluetoothctl devices` — all devices Bluez has ever seen
     /// - `hcitool con` — currently active ACL connections (catches devices
     ///   connected via Docker containers or other non-Bluez stacks)
-    fn scan_bluetooth_devices() -> Vec<LanDevice> {
-        let mut seen = std::collections::HashSet::new();
-        let mut devices = Vec::new();
+    fn collect_bt_devices() -> Vec<(String, String)> {
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
 
         // Source 1: bluetoothctl paired-devices
         if let Ok(output) = Command::new("bluetoothctl").args(["paired-devices"]).output() {
@@ -96,13 +100,12 @@ impl NetworksScanner {
                 if parts.len() < 3 || parts[0] != "Device" { continue; }
                 let mac = parts[1].to_uppercase();
                 if seen.insert(mac.clone()) {
-                    devices.push(Self::make_bt_device(mac, parts[2].to_string()));
+                    results.push((mac, parts[2].to_string()));
                 }
             }
         }
 
         // Source 2: bluetoothctl devices (all known, not just paired)
-        // This catches devices that Bluez has discovered but may not be paired.
         if let Ok(output) = Command::new("bluetoothctl").args(["devices"]).output() {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
@@ -110,36 +113,30 @@ impl NetworksScanner {
                 if parts.len() < 3 || parts[0] != "Device" { continue; }
                 let mac = parts[1].to_uppercase();
                 if seen.insert(mac.clone()) {
-                    devices.push(Self::make_bt_device(mac, parts[2].to_string()));
+                    results.push((mac, parts[2].to_string()));
                 }
             }
         }
 
-        // Source 3: hcitool con — active ACL connections.
-        // These show MACs of devices currently connected at the HCI level,
-        // regardless of whether Bluez knows about them. Useful when Docker
-        // containers talk directly to the BT adapter.
+        // Source 3: hcitool con — active ACL connections
         if let Ok(output) = Command::new("hcitool").args(["con"]).output() {
             let text = String::from_utf8_lossy(&output.stdout);
             for line in text.lines() {
-                // Format: "    < ACL 00:11:22:33:44:55 handle 42 state 1 lm PERIPHERAL"
                 let trimmed = line.trim();
                 if !trimmed.starts_with("< ACL ") { continue; }
-                // Extract MAC — second whitespace-delimited token after "< ACL"
                 let mut parts = trimmed.split_whitespace();
-                parts.next(); // skip "<"
-                parts.next(); // skip "ACL"
+                parts.next();
+                parts.next();
                 let Some(mac_raw) = parts.next() else { continue };
                 let mac = mac_raw.to_uppercase();
                 if seen.insert(mac.clone()) {
-                    // Try to resolve a human-readable name via hcitool name
                     let name = Self::resolve_bt_name(&mac);
-                    devices.push(Self::make_bt_device(mac, name));
+                    results.push((mac, name));
                 }
             }
         }
 
-        devices
+        results
     }
 
     /// Try to resolve a BT device name from MAC.
@@ -150,29 +147,51 @@ impl NetworksScanner {
                 return name;
             }
         }
-        // Fallback: give a generic name from the MAC's OUI prefix
         let oui = if mac.len() >= 8 { &mac[..8] } else { mac };
         format!("BT Device ({})", oui)
     }
 
-    fn make_bt_device(mac: String, hostname: String) -> LanDevice {
-        LanDevice {
-            ip: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-            mac,
-            hostname: Some(hostname),
-            vendor: Some("Bluetooth".to_string()),
-            first_seen: chrono::Local::now().time(),
-            last_seen: chrono::Local::now().time(),
-            is_online: true,
-            custom_name: None,
-            discovery_info: String::new(),
-            open_ports: String::new(),
-            bytes_sent: 0,
-            bytes_received: 0,
-            tick_sent: 0,
-            tick_received: 0,
-            speed_sent: 0.0,
-            speed_received: 0.0,
+    /// Merge freshly-scanned BT devices into the persistent known list.
+    /// New devices are added with is_online=true; devices not seen this
+    /// scan are marked is_online=false. Existing device names are updated
+    /// if the scan found a better one (hcitool name may yield a real name
+    /// on a later scan where bluetoothctl only had a placeholder).
+    fn merge_bt_devices(&mut self, fresh_devices: Vec<(String, String)>) {
+        let now = chrono::Local::now().time();
+
+        // Mark all existing devices offline by default, re-enable below
+        for dev in &mut self.known_bt_devices {
+            dev.is_online = false;
+        }
+
+        for (mac, name) in fresh_devices {
+            if let Some(existing) = self.known_bt_devices.iter_mut().find(|d| d.mac == mac) {
+                // Update name if we have a better one
+                if !name.starts_with("BT Device (") || existing.hostname.as_deref().map_or(true, |h| h.starts_with("BT Device (")) {
+                    existing.hostname = Some(name);
+                }
+                existing.is_online = true;
+                existing.last_seen = now;
+            } else {
+                self.known_bt_devices.push(LanDevice {
+                    ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    mac,
+                    hostname: Some(name),
+                    vendor: Some("Bluetooth".to_string()),
+                    first_seen: now,
+                    last_seen: now,
+                    is_online: true,
+                    custom_name: None,
+                    discovery_info: String::new(),
+                    open_ports: String::new(),
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    tick_sent: 0,
+                    tick_received: 0,
+                    speed_sent: 0.0,
+                    speed_received: 0.0,
+                });
+            }
         }
     }
 
@@ -275,28 +294,34 @@ impl NetworksScanner {
                 devices: vec![device],
             });
         }
-        // ─── Bluetooth adapter detection ─────────────────────────────
-        // Check if hci0 exists (BT adapter). If no BT network was added
-        // from ip addr (e.g. bnep0 not connected), create one for the adapter.
+
+        // ─── Bluetooth adapter detection (collector mode) ──────────────
         let bt_adapter_exists = fs::read_dir("/sys/class/bluetooth")
             .map(|mut d| d.next().is_some())
             .unwrap_or(false);
 
         if bt_adapter_exists {
+            // Scan fresh BT devices and merge into persistent store
+            let fresh = Self::collect_bt_devices();
+            self.merge_bt_devices(fresh);
+
+            // Read adapter MAC
+            let bt_mac = fs::read_to_string("/sys/class/bluetooth/hci0/address")
+                .map(|s| s.trim().to_string().to_uppercase())
+                .unwrap_or_default();
+            // Read adapter name
+            let bt_name = fs::read_to_string("/sys/class/bluetooth/hci0/name")
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "Bluetooth Adapter".to_string());
+
+            // Check if any existing net is already a BT network
             let already_has_bt = nets.iter().any(|n| n.category == NetworkCategory::Bluetooth);
-            if !already_has_bt {
-                // Read adapter MAC
-                let bt_mac = fs::read_to_string("/sys/class/bluetooth/hci0/address")
-                    .map(|s| s.trim().to_string().to_uppercase())
-                    .unwrap_or_default();
-                // Read adapter name
-                let bt_name = fs::read_to_string("/sys/class/bluetooth/hci0/name")
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|_| "Bluetooth Adapter".to_string());
-
-                // Get paired devices from bluetoothctl (instant, no scan delay)
-                let bt_devices = Self::scan_bluetooth_devices();
-
+            if already_has_bt {
+                // Inject known BT devices into the first BT network entry
+                if let Some(bt_net) = nets.iter_mut().find(|n| n.category == NetworkCategory::Bluetooth) {
+                    bt_net.devices = self.known_bt_devices.clone();
+                }
+            } else {
                 nets.push(RemoteNetwork {
                     name: bt_name,
                     network: "N/A".to_string(),
@@ -305,7 +330,7 @@ impl NetworksScanner {
                     category: NetworkCategory::Bluetooth,
                     metric: 0,
                     iface: "hci0".to_string(),
-                    devices: bt_devices,
+                    devices: self.known_bt_devices.clone(),
                 });
 
                 // If adapter has no MAC-based device entry, add one
@@ -317,7 +342,7 @@ impl NetworksScanner {
                             .ok()
                             .map(|s| s.trim().to_string());
                         last.devices.push(LanDevice {
-                            ip: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                            ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                             mac: bt_mac,
                             hostname,
                             vendor: Some("Bluetooth Adapter".to_string()),
