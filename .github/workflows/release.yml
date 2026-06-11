@@ -17,24 +17,27 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             rust_target: x86_64-unknown-linux-gnu
             deb_arch: amd64
-            cross_prefix: ""
             pkg_suffix: x86_64
             syslib: libpcap0.8
+            libc_min: "2.31"
+            runner: ubuntu-20.04
           - target: aarch64-unknown-linux-gnu
             rust_target: aarch64-unknown-linux-gnu
             deb_arch: arm64
-            cross_prefix: aarch64-linux-gnu-
             pkg_suffix: aarch64
             syslib: libpcap0.8
-    runs-on: ubuntu-latest
+            libc_min: "2.31"
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.arch.runner }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install native dependencies
+      - name: Install native dependencies (x86_64)
+        if: matrix.arch.target == 'x86_64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y libpcap0.8-dev
 
       - name: Set up QEMU for ARM64
-        if: matrix.arch.cross_prefix != ''
+        if: matrix.arch.target != 'x86_64-unknown-linux-gnu'
         uses: docker/setup-qemu-action@v4
 
       - name: Cache cargo
@@ -54,17 +57,20 @@ jobs:
 
       - name: Build release (${{ matrix.arch.target }})
         run: |
-          if [ -n "${{ matrix.arch.cross_prefix }}" ]; then
-            # Build via QEMU + Docker for ARM64 — native emulation avoids cross-compilation pain
+          if [ "${{ matrix.arch.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            # Native build on ubuntu-20.04 → glibc 2.31, compatible with all newer
+            cargo build --release --target ${{ matrix.arch.rust_target }}
+          else
+            # ARM64: build inside Docker with Debian Bullseye (glibc 2.31)
             docker run --platform linux/arm64 --rm -v ${{ github.workspace }}:/work -w /work \
-              rust:latest bash -c "
-                apt-get update -qq && apt-get install -y -qq libpcap-dev > /dev/null
+              debian:bullseye-slim bash -c "
+                apt-get update -qq && apt-get install -y -qq curl libpcap-dev build-essential > /dev/null
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+                source \\\$HOME/.cargo/env
                 cargo build --release
               "
             sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
             sudo cp ${{ github.workspace }}/target/release/psnet target/${{ matrix.arch.rust_target }}/release/psnet
-          else
-            cargo build --release --target ${{ matrix.arch.rust_target }}
           fi
 
       - name: Create .deb package (${{ matrix.arch.deb_arch }})
@@ -88,7 +94,7 @@ jobs:
             printf 'Section: net\n'
             printf 'Priority: optional\n'
             printf 'Architecture: %s\n' "${{ matrix.arch.deb_arch }}"
-            printf 'Depends: %s (>= 1.9), libc6 (>= 2.31)\n' "${{ matrix.arch.syslib }}"
+            printf 'Depends: %s (>= 1.9), libc6 (>= %s)\n' "${{ matrix.arch.syslib }}" "${{ matrix.arch.libc_min }}"
             printf 'Maintainer: naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com>\n'
             printf 'Description: Real-time TUI network monitor for Linux\n'
             printf ' 9 interactive tabs covering live speed graphs, active connections,\n'
@@ -172,7 +178,7 @@ jobs:
           ar x psnet_*.deb
           tar xf data.tar.zst 2>/dev/null || tar xf data.tar.gz 2>/dev/null || true
 
-          # Write spec file (avoid heredocs for YAML parser safety)
+          # Write spec file
           {
             printf 'Name: psnet\n'
             printf 'Version: %s\n' "$VERSION"
