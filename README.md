@@ -36,7 +36,7 @@ This is a **Linux port** of the original [psmux/psnet](https://github.com/psmux/
 ## Screenshots
 
 <p align="center">
-  <em>Screenshots coming soon — help by submitting one!</em>
+  <img src="image.png" alt="PSNET screenshot" width="800">
 </p>
 
 ---
