@@ -67,6 +67,8 @@ fn draw_connection_detail(f: &mut Frame, area: Rect, conn: &crate::types::Connec
         .map(|ip| format!("{}:{}", ip, conn.remote_port.unwrap_or(0)))
         .unwrap_or_else(|| "\u{2014}".to_string());
 
+    let cmdline = crate::network::connections::get_cmdline(conn.pid);
+
     let mut lines = header_lines(" Connection Detail ");
     lines.push(row("Protocol",    conn.proto.label().to_string(),                   Color::Rgb(100, 220, 255)));
     lines.push(row("Process",     conn.process_name.clone(),                        Color::Rgb(130, 200, 140)));
@@ -78,6 +80,22 @@ fn draw_connection_detail(f: &mut Frame, area: Rect, conn: &crate::types::Connec
     lines.push(row("Service",     service,                                          Color::Rgb(200, 180, 80)));
     lines.push(row("State",       state_str,                                        state_color));
     lines.push(row("Country",     country_str,                                      Color::Rgb(170, 200, 230)));
+
+    if !cmdline.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Command Line",
+            Style::default().fg(Color::Rgb(90, 105, 135)),
+        )));
+        // Show full cmdline — wrap if needed by splitting on spaces
+        for chunk in split_cmdline(&cmdline, area.width.saturating_sub(6) as usize) {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", chunk),
+                Style::default().fg(Color::Rgb(170, 185, 210)),
+            )));
+        }
+    }
+
     lines.push(Line::from(""));
     lines.push(dismiss_line());
 
@@ -596,6 +614,37 @@ fn dismiss_line() -> Line<'static> {
         "  [ Enter / Esc to close ]",
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
     ))
+}
+
+/// Split a string into lines that fit within `max_width` characters,
+/// breaking at word boundaries.
+fn split_cmdline<'a>(s: &'a str, max_width: usize) -> Vec<&'a str> {
+    if s.len() <= max_width || max_width < 10 {
+        return vec![s];
+    }
+    let mut result = Vec::new();
+    let mut start = 0;
+    while start < s.len() {
+        if start + max_width >= s.len() {
+            result.push(&s[start..]);
+            break;
+        }
+        // Find a break point at or before max_width
+        let end = start + max_width;
+        if let Some(space) = s[start..=end].rfind(' ') {
+            if space > 0 {
+                result.push(&s[start..start + space]);
+                start = start + space + 1;
+            } else {
+                result.push(&s[start..end]);
+                start = end;
+            }
+        } else {
+            result.push(&s[start..end]);
+            start = end;
+        }
+    }
+    result
 }
 
 fn render_popup(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {

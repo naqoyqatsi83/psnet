@@ -14,13 +14,14 @@ fn parse_ip_port(s: &str) -> Option<(IpAddr, u16)> {
     let hex_port = parts[1];
     let ip_bytes = hex_ip.as_bytes();
     if ip_bytes.len() != 8 { return None; }
-    let mut ip_u32 = 0u32;
-    for i in 0..8 {
-        let nibble = u8::from_str_radix(&hex_ip[i..i+1], 16).ok()? as u32;
-        ip_u32 = (ip_u32 << 4) | nibble;
-    }
+    // /proc/net/tcp stores addresses as hex in little-endian byte order,
+    // e.g. 127.0.0.1 → "0100007F" (bytes 01,00,00,7F → reversed → 7F,00,00,01)
+    let b0 = u8::from_str_radix(&hex_ip[0..2], 16).ok()?;
+    let b1 = u8::from_str_radix(&hex_ip[2..4], 16).ok()?;
+    let b2 = u8::from_str_radix(&hex_ip[4..6], 16).ok()?;
+    let b3 = u8::from_str_radix(&hex_ip[6..8], 16).ok()?;
+    let ip = IpAddr::V4(Ipv4Addr::new(b3, b2, b1, b0));
     let port = u16::from_str_radix(hex_port, 16).ok()?;
-    let ip = IpAddr::V4(Ipv4Addr::from(ip_u32));
     Some((ip, port))
 }
 
@@ -277,4 +278,13 @@ pub fn get_process_full_path(pid: u32) -> Option<String> {
     fs::read_link(&exe)
         .ok()
         .and_then(|p| p.to_str().map(String::from))
+}
+
+/// Read /proc/[pid]/cmdline, replacing NUL separators with spaces.
+pub fn get_cmdline(pid: u32) -> String {
+    let path = format!("/proc/{}/cmdline", pid);
+    match fs::read_to_string(&path) {
+        Ok(s) => s.replace('\0', " ").trim().to_string(),
+        Err(_) => String::new(),
+    }
 }

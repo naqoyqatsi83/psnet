@@ -26,8 +26,9 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
         .fg(Color::Rgb(160, 180, 220))
         .add_modifier(Modifier::BOLD);
 
-    // ── Redesigned columns: Process | Remote Host | Country | Service | State | Local ──
+    // ── Columns: PID | Process | Remote Host | Geo | Service | State | Local ──
     let header = Row::new(vec![
+        Cell::from(Span::styled("PID", hdr_style)),
         Cell::from(Span::styled(format!("Process{}", sort_ind(6)), hdr_style)),
         Cell::from(Span::styled(format!("Remote Host{}", sort_ind(3)), hdr_style)),
         Cell::from(Span::styled("Geo", hdr_style)),
@@ -171,7 +172,17 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
                 Color::Rgb(12, 16, 28)
             };
 
+            let pid_str = if conn.pid > 0 {
+                conn.pid.to_string()
+            } else {
+                "-".to_string()
+            };
+
             Row::new(vec![
+                Cell::from(Span::styled(
+                    pid_str,
+                    Style::default().fg(Color::Rgb(100, 110, 140)),
+                )),
                 Cell::from(Span::styled(proc_display, Style::default().fg(proc_color))),
                 Cell::from(Span::styled(
                     remote_display,
@@ -255,7 +266,10 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
             .unwrap_or_else(|| "*".to_string());
         Line::from(vec![
             Span::styled(" \u{25B8} ", Style::default().fg(Color::Rgb(100, 200, 255)).add_modifier(Modifier::BOLD)),
-            Span::styled(conn.process_name.clone(), Style::default().fg(Color::Rgb(130, 200, 140)).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{} [{}]", conn.process_name, conn.pid),
+                Style::default().fg(Color::Rgb(130, 200, 140)).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" \u{2192} ", Style::default().fg(Color::Rgb(60, 80, 110))),
             Span::styled(remote_str, Style::default().fg(Color::Rgb(100, 220, 255))),
             Span::styled(" \u{2502} ", Style::default().fg(Color::Rgb(40, 55, 80))),
@@ -268,11 +282,12 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(20),  // Process (wider for ▸ prefix)
-            Constraint::Min(22),     // Remote Host (widest — the star)
-            Constraint::Length(7),   // Geo (flag + code)
-            Constraint::Length(14),  // Service
-            Constraint::Length(14),  // State
+            Constraint::Length(6),   // PID
+            Constraint::Length(16),  // Process
+            Constraint::Min(20),     // Remote Host (widest — the star)
+            Constraint::Length(7),   // Geo
+            Constraint::Length(12),  // Service
+            Constraint::Length(12),  // State
             Constraint::Length(7),   // Local port
         ],
     )
