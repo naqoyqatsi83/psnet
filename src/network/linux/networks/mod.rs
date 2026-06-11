@@ -262,11 +262,12 @@ impl NetworksScanner {
                 .map(|s| s.trim().to_string());
 
             // Build a device entry for this interface
+            let iface_vendor = if mac_addr.is_empty() { None } else { oui_lookup(&mac_addr) };
             let device = LanDevice {
                 ip: IpAddr::V4(ip),
                 mac: mac_addr,
                 hostname: hostname.clone(),
-                vendor: None,
+                vendor: iface_vendor.map(|v| v.to_string()),
                 first_seen: chrono::Local::now().time(),
                 last_seen: chrono::Local::now().time(),
                 is_online,
