@@ -147,6 +147,8 @@ pub struct App {
     map_prev_remote_ips: HashSet<IpAddr>,
     /// Dashboard map fullscreen toggle.
     pub map_fullscreen: bool,
+    /// Dashboard map high-contrast mode toggle.
+    pub map_high_contrast: bool,
 
     /// System-configured DNS servers (detected from ipconfig /all).
     pub dns_servers: Vec<IpAddr>,
@@ -276,6 +278,7 @@ impl App {
             map_fading_dots: Vec::new(),
             map_prev_remote_ips: HashSet::new(),
             map_fullscreen: false,
+            map_high_contrast: false,
 
             dns_servers: Vec::new(),
             last_frame_size: Rect::default(),
@@ -1574,6 +1577,17 @@ impl App {
             KeyCode::Char('3') => self.dashboard_time_range = DashboardTimeRange::Hour1,
             KeyCode::Char('4') => self.dashboard_time_range = DashboardTimeRange::Hours24,
             KeyCode::Char('m') | KeyCode::Char('M') => self.map_fullscreen = !self.map_fullscreen,
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                self.map_high_contrast = !self.map_high_contrast;
+                self.status_message = Some((
+                    if self.map_high_contrast {
+                        "Map: high contrast".to_string()
+                    } else {
+                        "Map: normal contrast".to_string()
+                    },
+                    Instant::now(),
+                ));
+            }
             _ => {}
         }
     }

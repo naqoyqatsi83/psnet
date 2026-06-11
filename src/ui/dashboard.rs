@@ -15,6 +15,7 @@ use super::widgets::health_gauge::compute_health_score;
 use super::widgets::traffic_chart::draw_traffic_chart;
 use super::widgets::world_map::{
     draw_world_map_dots, fade_brightness, ip_to_seed, ConnectionDot,
+    PALETTE_NORMAL, PALETTE_HIGH_CONTRAST,
 };
 
 /// Palette of colors for top-app bar chart entries.
@@ -46,6 +47,10 @@ pub fn draw_dashboard(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 " m:Exit Map  ",
                 Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                " c:Contrast  ",
+                Style::default().fg(if app.map_high_contrast { Color::Rgb(80, 200, 120) } else { Color::Rgb(60, 80, 110) }),
             ),
             Span::styled(
                 "1-4:Time Range  ",
@@ -255,7 +260,8 @@ fn draw_country_map(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    draw_world_map_dots(f, area, &dots, app.tick_count);
+    let pal = if app.map_high_contrast { &PALETTE_HIGH_CONTRAST } else { &PALETTE_NORMAL };
+    draw_world_map_dots(f, area, &dots, app.tick_count, pal);
 }
 
 /// Render the top 10 countries by connection count with country code badges.

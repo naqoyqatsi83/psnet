@@ -15,20 +15,58 @@ use ratatui::Frame;
 
 // ── Color palette ──────────────────────────────────────────────────────────
 
-const CLR_OCEAN: Color = Color::Rgb(8, 12, 24);
-const CLR_BORDER: Color = Color::Rgb(30, 50, 85);
-const CLR_LAND: Color = Color::Rgb(30, 55, 85);
-const CLR_NORMAL: Color = Color::Rgb(80, 200, 120);
-const CLR_MODERATE: Color = Color::Rgb(255, 200, 80);
-const CLR_HIGH: Color = Color::Rgb(255, 130, 60);
-const CLR_THREAT: Color = Color::Rgb(255, 60, 60);
+/// Map color theme — allows toggling between normal and high-contrast modes.
+#[derive(Clone, Copy)]
+pub struct MapPalette {
+    pub ocean: Color,
+    pub border: Color,
+    pub land: Color,
+    pub label: Color,
+    pub title: Color,
+    pub normal: Color,
+    pub moderate: Color,
+    pub high: Color,
+    pub threat: Color,
+    pub connecting: Color,
+    pub receiving: Color,
+    pub sending: Color,
+    pub disconnecting: Color,
+    pub mixed: Color,
+}
 
-// Activity-based colors
-const CLR_CONNECTING: Color = Color::Rgb(60, 180, 255);    // cyan-blue for new connections
-const CLR_RECEIVING: Color = Color::Rgb(50, 255, 130);     // bright green for inbound data
-const CLR_SENDING: Color = Color::Rgb(200, 120, 255);      // purple/magenta for outbound data
-const CLR_DISCONNECTING: Color = Color::Rgb(255, 100, 60); // red-orange for disconnections
-const CLR_MIXED: Color = Color::Rgb(220, 230, 255);        // bright white-blue for mixed activity
+pub const PALETTE_NORMAL: MapPalette = MapPalette {
+    ocean: Color::Rgb(8, 12, 24),
+    border: Color::Rgb(30, 50, 85),
+    land: Color::Rgb(30, 55, 85),
+    label: Color::Rgb(100, 120, 150),
+    title: Color::Rgb(160, 180, 220),
+    normal: Color::Rgb(80, 200, 120),
+    moderate: Color::Rgb(255, 200, 80),
+    high: Color::Rgb(255, 130, 60),
+    threat: Color::Rgb(255, 60, 60),
+    connecting: Color::Rgb(60, 180, 255),
+    receiving: Color::Rgb(50, 255, 130),
+    sending: Color::Rgb(200, 120, 255),
+    disconnecting: Color::Rgb(255, 100, 60),
+    mixed: Color::Rgb(220, 230, 255),
+};
+
+pub const PALETTE_HIGH_CONTRAST: MapPalette = MapPalette {
+    ocean: Color::Rgb(16, 30, 60),
+    border: Color::Rgb(60, 100, 160),
+    land: Color::Rgb(60, 110, 170),
+    label: Color::Rgb(160, 180, 210),
+    title: Color::Rgb(200, 220, 240),
+    normal: Color::Rgb(80, 200, 120),
+    moderate: Color::Rgb(255, 200, 80),
+    high: Color::Rgb(255, 130, 60),
+    threat: Color::Rgb(255, 60, 60),
+    connecting: Color::Rgb(60, 180, 255),
+    receiving: Color::Rgb(50, 255, 130),
+    sending: Color::Rgb(200, 120, 255),
+    disconnecting: Color::Rgb(255, 100, 60),
+    mixed: Color::Rgb(220, 230, 255),
+};
 
 /// Fade duration for closed connections (in ticks, 1 tick = 1s).
 const FADE_TICKS: u64 = 10;
@@ -394,7 +432,7 @@ impl BrailleCanvas {
     }
 
     /// Render to styled Lines for ratatui.
-    fn render(&self) -> Vec<Line<'static>> {
+    fn render(&self, pal: &MapPalette) -> Vec<Line<'static>> {
         let mut lines = Vec::with_capacity(self.rows);
         for row in 0..self.rows {
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(self.cols);
@@ -402,13 +440,13 @@ impl BrailleCanvas {
                 let bits = self.cells[row][col];
                 let ch = char::from_u32(BRAILLE_BASE + bits as u32).unwrap_or(' ');
                 let fg = if bits == 0 {
-                    CLR_OCEAN
+                    pal.ocean
                 } else {
-                    self.colors[row][col].unwrap_or(CLR_LAND)
+                    self.colors[row][col].unwrap_or(pal.land)
                 };
                 spans.push(Span::styled(
                     ch.to_string(),
-                    Style::default().fg(fg).bg(CLR_OCEAN),
+                    Style::default().fg(fg).bg(pal.ocean),
                 ));
             }
             lines.push(Line::from(spans));
@@ -419,9 +457,9 @@ impl BrailleCanvas {
 
 // ── Marker color logic ────────────────────────────────────────────────────
 
-fn marker_color(count: usize, has_threat: bool, activity: &CountryActivity, tick: u64) -> Color {
+fn marker_color(count: usize, has_threat: bool, activity: &CountryActivity, tick: u64, pal: &MapPalette) -> Color {
     if has_threat {
-        return CLR_THREAT;
+        return pal.threat;
     }
 
     // Activity-based colors take priority when active
@@ -430,31 +468,29 @@ fn marker_color(count: usize, has_threat: bool, activity: &CountryActivity, tick
     if has_activity {
         // Mixed send+receive = white pulse
         if activity.sending && activity.receiving {
-            return if tick % 2 == 0 { CLR_MIXED } else { Color::Rgb(180, 200, 230) };
+            return if tick % 2 == 0 { pal.mixed } else { Color::Rgb(180, 200, 230) };
         }
         if activity.connecting {
-            // Pulse cyan
-            return if tick % 2 == 0 { CLR_CONNECTING } else { Color::Rgb(40, 140, 200) };
+            return if tick % 2 == 0 { pal.connecting } else { Color::Rgb(40, 140, 200) };
         }
         if activity.receiving {
-            return CLR_RECEIVING;
+            return pal.receiving;
         }
         if activity.sending {
-            return CLR_SENDING;
+            return pal.sending;
         }
         if activity.disconnecting {
-            // Fade effect - dimmer red
-            return if tick % 2 == 0 { CLR_DISCONNECTING } else { Color::Rgb(180, 70, 40) };
+            return if tick % 2 == 0 { pal.disconnecting } else { Color::Rgb(180, 70, 40) };
         }
     }
 
     // Fall back to count-based coloring
     if count > 20 {
-        CLR_HIGH
+        pal.high
     } else if count >= 6 {
-        CLR_MODERATE
+        pal.moderate
     } else {
-        CLR_NORMAL
+        pal.normal
     }
 }
 
@@ -517,7 +553,7 @@ struct MapSetup {
     y_bot: f64,
 }
 
-fn setup_map(inner_w: usize, map_h: usize) -> MapSetup {
+fn setup_map(inner_w: usize, map_h: usize, pal: &MapPalette) -> MapSetup {
     let dot_w = inner_w * 2;
     let dot_h = map_h * 4;
     let mut canvas = BrailleCanvas::new(inner_w, map_h);
@@ -539,19 +575,19 @@ fn setup_map(inner_w: usize, map_h: usize) -> MapSetup {
             let py0 = (((my0 - y_top) / (y_bot - y_top)) * dot_h as f64) as i32;
             let px1 = (mx1 * dot_w as f64) as i32;
             let py1 = (((my1 - y_top) / (y_bot - y_top)) * dot_h as f64) as i32;
-            canvas.line(px0, py0, px1, py1, CLR_LAND);
+            canvas.line(px0, py0, px1, py1, pal.land);
         }
     }
 
     MapSetup { canvas, dot_w, dot_h, y_top, y_bot }
 }
 
-fn early_exit_block(f: &mut Frame, area: Rect) -> bool {
+fn early_exit_block(f: &mut Frame, area: Rect, pal: &MapPalette) -> bool {
     if area.width < 6 || area.height < 5 {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(CLR_BORDER))
-            .style(Style::default().bg(CLR_OCEAN));
+            .border_style(Style::default().fg(pal.border))
+            .style(Style::default().bg(pal.ocean));
         f.render_widget(block, area);
         return true;
     }
@@ -561,8 +597,8 @@ fn early_exit_block(f: &mut Frame, area: Rect) -> bool {
 // ── Main draw function (country-aggregated mode) ────────────────────────
 
 #[allow(dead_code)]
-pub fn draw_world_map(f: &mut Frame, area: Rect, countries: &[CountryMarker], tick: u64) {
-    if early_exit_block(f, area) {
+pub fn draw_world_map(f: &mut Frame, area: Rect, countries: &[CountryMarker], tick: u64, pal: &MapPalette) {
+    if early_exit_block(f, area, pal) {
         return;
     }
 
@@ -572,11 +608,11 @@ pub fn draw_world_map(f: &mut Frame, area: Rect, countries: &[CountryMarker], ti
     let map_h = inner_h.saturating_sub(legend_rows);
 
     if inner_w < 4 || map_h < 2 {
-        early_exit_block(f, area);
+        early_exit_block(f, area, pal);
         return;
     }
 
-    let mut ms = setup_map(inner_w, map_h);
+    let mut ms = setup_map(inner_w, map_h, pal);
 
     // Draw country markers
     for cm in countries {
@@ -584,7 +620,7 @@ pub fn draw_world_map(f: &mut Frame, area: Rect, countries: &[CountryMarker], ti
             let (mx, my) = mercator(lon, lat);
             let px = (mx * ms.dot_w as f64) as i32;
             let py = (((my - ms.y_top) / (ms.y_bot - ms.y_top)) * ms.dot_h as f64) as i32;
-            let color = marker_color(cm.count, cm.has_threat, &cm.activity, tick);
+            let color = marker_color(cm.count, cm.has_threat, &cm.activity, tick, pal);
             let r = if cm.count > 10 { 3 } else { 2 };
 
             let has_activity = cm.activity.connecting || cm.activity.receiving
@@ -596,19 +632,20 @@ pub fn draw_world_map(f: &mut Frame, area: Rect, countries: &[CountryMarker], ti
         }
     }
 
-    let mut lines = ms.canvas.render();
+    let mut lines = ms.canvas.render(pal);
 
+    let label_style = Style::default().fg(pal.label).bg(pal.ocean);
     let legend = Line::from(vec![
-        Span::styled(" \u{25CF}", Style::default().fg(CLR_CONNECTING).bg(CLR_OCEAN)),
-        Span::styled(" New ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_RECEIVING).bg(CLR_OCEAN)),
-        Span::styled(" Recv ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_SENDING).bg(CLR_OCEAN)),
-        Span::styled(" Send ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_DISCONNECTING).bg(CLR_OCEAN)),
-        Span::styled(" Close ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_THREAT).bg(CLR_OCEAN)),
-        Span::styled(" Threat", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
+        Span::styled(" \u{25CF}", Style::default().fg(pal.connecting).bg(pal.ocean)),
+        Span::styled(" New ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.receiving).bg(pal.ocean)),
+        Span::styled(" Recv ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.sending).bg(pal.ocean)),
+        Span::styled(" Send ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.disconnecting).bg(pal.ocean)),
+        Span::styled(" Close ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.threat).bg(pal.ocean)),
+        Span::styled(" Threat", label_style),
     ]);
     lines.push(legend);
 
@@ -618,25 +655,25 @@ pub fn draw_world_map(f: &mut Frame, area: Rect, countries: &[CountryMarker], ti
     let mut title_spans = vec![
         Span::styled(
             " Connection Map ",
-            Style::default().fg(Color::Rgb(160, 180, 220)).add_modifier(Modifier::BOLD),
+            Style::default().fg(pal.title).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" {} countries ", active),
-            Style::default().fg(Color::Rgb(100, 120, 150)),
+            Style::default().fg(pal.label),
         ),
     ];
     if threat_count > 0 {
         title_spans.push(Span::styled(
             format!(" {} threats ", threat_count),
-            Style::default().fg(CLR_THREAT).add_modifier(Modifier::BOLD),
+            Style::default().fg(pal.threat).add_modifier(Modifier::BOLD),
         ));
     }
 
     let block = Block::default()
         .title(Line::from(title_spans))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(CLR_BORDER))
-        .style(Style::default().bg(CLR_OCEAN));
+        .border_style(Style::default().fg(pal.border))
+        .style(Style::default().bg(pal.ocean));
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
@@ -649,8 +686,9 @@ pub fn draw_world_map_dots(
     area: Rect,
     dots: &[ConnectionDot],
     tick: u64,
+    pal: &MapPalette,
 ) {
-    if early_exit_block(f, area) {
+    if early_exit_block(f, area, pal) {
         return;
     }
 
@@ -660,11 +698,11 @@ pub fn draw_world_map_dots(
     let map_h = inner_h.saturating_sub(legend_rows);
 
     if inner_w < 4 || map_h < 2 {
-        early_exit_block(f, area);
+        early_exit_block(f, area, pal);
         return;
     }
 
-    let mut ms = setup_map(inner_w, map_h);
+    let mut ms = setup_map(inner_w, map_h, pal);
 
     let mut live_count = 0u32;
     let mut fading_count = 0u32;
@@ -709,25 +747,26 @@ pub fn draw_world_map_dots(
             ms.canvas.filled_circle(px, py, r, color);
         }
 
-        if dot.color == CLR_THREAT {
+        if dot.color == pal.threat {
             threat_count += 1;
         }
     }
 
-    let mut lines = ms.canvas.render();
+    let mut lines = ms.canvas.render(pal);
 
     // Legend
+    let label_style = Style::default().fg(pal.label).bg(pal.ocean);
     let legend = Line::from(vec![
-        Span::styled(" \u{25CF}", Style::default().fg(CLR_NORMAL).bg(CLR_OCEAN)),
-        Span::styled(" Est ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_CONNECTING).bg(CLR_OCEAN)),
-        Span::styled(" Syn ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_SENDING).bg(CLR_OCEAN)),
-        Span::styled(" Wait ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_DISCONNECTING).bg(CLR_OCEAN)),
-        Span::styled(" Close ", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
-        Span::styled("\u{25CF}", Style::default().fg(CLR_THREAT).bg(CLR_OCEAN)),
-        Span::styled(" Threat", Style::default().fg(Color::Rgb(100, 120, 150)).bg(CLR_OCEAN)),
+        Span::styled(" \u{25CF}", Style::default().fg(pal.normal).bg(pal.ocean)),
+        Span::styled(" Est ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.connecting).bg(pal.ocean)),
+        Span::styled(" Syn ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.sending).bg(pal.ocean)),
+        Span::styled(" Wait ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.disconnecting).bg(pal.ocean)),
+        Span::styled(" Close ", label_style),
+        Span::styled("\u{25CF}", Style::default().fg(pal.threat).bg(pal.ocean)),
+        Span::styled(" Threat", label_style),
     ]);
     lines.push(legend);
 
@@ -735,31 +774,31 @@ pub fn draw_world_map_dots(
     let mut title_spans = vec![
         Span::styled(
             " Connection Map ",
-            Style::default().fg(Color::Rgb(160, 180, 220)).add_modifier(Modifier::BOLD),
+            Style::default().fg(pal.title).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" {} live", live_count),
-            Style::default().fg(CLR_NORMAL),
+            Style::default().fg(pal.normal),
         ),
     ];
     if fading_count > 0 {
         title_spans.push(Span::styled(
             format!(" {} fading", fading_count),
-            Style::default().fg(Color::Rgb(100, 120, 150)),
+            Style::default().fg(pal.label),
         ));
     }
     if threat_count > 0 {
         title_spans.push(Span::styled(
             format!(" {} threats ", threat_count),
-            Style::default().fg(CLR_THREAT).add_modifier(Modifier::BOLD),
+            Style::default().fg(pal.threat).add_modifier(Modifier::BOLD),
         ));
     }
 
     let block = Block::default()
         .title(Line::from(title_spans))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(CLR_BORDER))
-        .style(Style::default().bg(CLR_OCEAN));
+        .border_style(Style::default().fg(pal.border))
+        .style(Style::default().bg(pal.ocean));
 
     let paragraph = Paragraph::new(lines).block(block);
     f.render_widget(paragraph, area);
