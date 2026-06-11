@@ -97,7 +97,7 @@ jobs:
             printf '#!/bin/sh\n'
             printf 'set -e\n'
             printf 'if [ -x /usr/bin/psnet ]; then\n'
-            printf '    /usr/sbin/setcap cap_net_raw+ep /usr/bin/psnet 2>/dev/null || true\n'
+            printf '    /usr/sbin/setcap cap_net_raw,cap_net_admin+ep /usr/bin/psnet 2>/dev/null || true\n'
             printf 'fi\n'
             printf 'exit 0\n'
           } > "$PKG_ROOT/DEBIAN/postinst"
@@ -194,7 +194,7 @@ jobs:
             printf '\n'
             printf '%%post\n'
             printf 'if [ -x %%{_bindir}/psnet ]; then\n'
-            printf '    /usr/sbin/setcap cap_net_raw+ep %%{_bindir}/psnet 2>/dev/null || true\n'
+            printf '    /usr/sbin/setcap cap_net_raw,cap_net_admin+ep %%{_bindir}/psnet 2>/dev/null || true\n'
             printf 'fi\n'
             printf '\n'
             printf '%%changelog\n'
@@ -278,7 +278,7 @@ jobs:
             **Other distros**: Download the `.tar.gz` for your arch, extract, and run `./psnet`.
             Optionally enable non-root packet capture:
             ```bash
-            sudo setcap cap_net_raw+ep ./psnet
+            sudo setcap cap_net_raw,cap_net_admin+ep ./psnet
             ```
 
             **Build from source**:

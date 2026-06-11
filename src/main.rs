@@ -19,6 +19,13 @@ use ratatui::Terminal;
 use app::App;
 
 fn main() -> io::Result<()> {
+    // Attempt to raise CAP_NET_ADMIN as an ambient capability so child
+    // processes (e.g. `ss`) inherit it and can resolve process info for
+    // all users.  This is a no-op if the binary lacks the capability or
+    // the kernel doesn't support ambient caps.
+    #[cfg(target_os = "linux")]
+    raise_ambient_cap_net_admin();
+
     // Setup terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -125,4 +132,21 @@ fn main() -> io::Result<()> {
     io::stdout().execute(DisableMouseCapture)?;
     io::stdout().execute(LeaveAlternateScreen)?;
     Ok(())
+}
+
+/// Raise `CAP_NET_ADMIN` as an ambient capability so child processes
+/// (like `ss -tunp`) inherit the capability and can resolve process
+/// information for all users.
+///
+/// This is a best-effort call — silently ignored when the binary
+/// hasn't been granted the capability or the kernel is too old.
+#[cfg(target_os = "linux")]
+fn raise_ambient_cap_net_admin() {
+    const PR_CAP_AMBIENT: libc::c_int = 47;
+    const PR_CAP_AMBIENT_RAISE: libc::c_ulong = 2;
+    const CAP_NET_ADMIN: libc::c_ulong = 12;
+
+    unsafe {
+        libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
+    }
 }

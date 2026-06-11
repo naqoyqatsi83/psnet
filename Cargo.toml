@@ -26,6 +26,7 @@ pcap = "0.10"
 dbus = { version = "0.9", optional = true }
 
 nix = { version = "0.29", features = ["net"] }
+libc = "0.2"
 procfs = "0.15"
 [profile.release]
 opt-level = 3
