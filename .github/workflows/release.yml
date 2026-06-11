@@ -217,7 +217,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: psnet-x86_64.rpm
-          path: $HOME/rpmbuild/RPMS/x86_64/psnet-*.rpm
+          path: ~/rpmbuild/RPMS/x86_64/psnet-*.rpm
 
   release:
     runs-on: ubuntu-latest
