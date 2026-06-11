@@ -77,42 +77,103 @@ impl NetworksScanner {
         &self.networks
     }
 
-    /// Scan for paired Bluetooth devices using bluetoothctl (instant).
+    /// Scan for Bluetooth devices visible to the adapter.
+    ///
+    /// Combines multiple sources:
+    /// - `bluetoothctl paired-devices` — officially paired via Bluez
+    /// - `bluetoothctl devices` — all devices Bluez has ever seen
+    /// - `hcitool con` — currently active ACL connections (catches devices
+    ///   connected via Docker containers or other non-Bluez stacks)
     fn scan_bluetooth_devices() -> Vec<LanDevice> {
-        // List paired devices — instant, no inquiry delay
-        let output = Command::new("bluetoothctl")
-            .args(["paired-devices"])
-            .output();
-        let Ok(output) = output else { return Vec::new() };
-        let text = String::from_utf8_lossy(&output.stdout);
+        let mut seen = std::collections::HashSet::new();
         let mut devices = Vec::new();
-        for line in text.lines() {
-            // Format: "Device 00:11:22:33:44:55 Device Name"
-            let parts: Vec<&str> = line.splitn(3, ' ').collect();
-            if parts.len() < 3 { continue; }
-            if parts[0] != "Device" { continue; }
-            let mac = parts[1].to_uppercase();
-            let name = parts[2].to_string();
-            devices.push(LanDevice {
-                ip: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                mac,
-                hostname: Some(name),
-                vendor: Some("Bluetooth".to_string()),
-                first_seen: chrono::Local::now().time(),
-                last_seen: chrono::Local::now().time(),
-                is_online: true,
-                custom_name: None,
-                discovery_info: String::new(),
-                open_ports: String::new(),
-                bytes_sent: 0,
-                bytes_received: 0,
-                tick_sent: 0,
-                tick_received: 0,
-                speed_sent: 0.0,
-                speed_received: 0.0,
-            });
+
+        // Source 1: bluetoothctl paired-devices
+        if let Ok(output) = Command::new("bluetoothctl").args(["paired-devices"]).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.splitn(3, ' ').collect();
+                if parts.len() < 3 || parts[0] != "Device" { continue; }
+                let mac = parts[1].to_uppercase();
+                if seen.insert(mac.clone()) {
+                    devices.push(Self::make_bt_device(mac, parts[2].to_string()));
+                }
+            }
         }
+
+        // Source 2: bluetoothctl devices (all known, not just paired)
+        // This catches devices that Bluez has discovered but may not be paired.
+        if let Ok(output) = Command::new("bluetoothctl").args(["devices"]).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.splitn(3, ' ').collect();
+                if parts.len() < 3 || parts[0] != "Device" { continue; }
+                let mac = parts[1].to_uppercase();
+                if seen.insert(mac.clone()) {
+                    devices.push(Self::make_bt_device(mac, parts[2].to_string()));
+                }
+            }
+        }
+
+        // Source 3: hcitool con — active ACL connections.
+        // These show MACs of devices currently connected at the HCI level,
+        // regardless of whether Bluez knows about them. Useful when Docker
+        // containers talk directly to the BT adapter.
+        if let Ok(output) = Command::new("hcitool").args(["con"]).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                // Format: "    < ACL 00:11:22:33:44:55 handle 42 state 1 lm PERIPHERAL"
+                let trimmed = line.trim();
+                if !trimmed.starts_with("< ACL ") { continue; }
+                // Extract MAC — second whitespace-delimited token after "< ACL"
+                let mut parts = trimmed.split_whitespace();
+                parts.next(); // skip "<"
+                parts.next(); // skip "ACL"
+                let Some(mac_raw) = parts.next() else { continue };
+                let mac = mac_raw.to_uppercase();
+                if seen.insert(mac.clone()) {
+                    // Try to resolve a human-readable name via hcitool name
+                    let name = Self::resolve_bt_name(&mac);
+                    devices.push(Self::make_bt_device(mac, name));
+                }
+            }
+        }
+
         devices
+    }
+
+    /// Try to resolve a BT device name from MAC.
+    fn resolve_bt_name(mac: &str) -> String {
+        if let Ok(output) = Command::new("hcitool").args(["name", mac]).output() {
+            let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !name.is_empty() && name != "null" {
+                return name;
+            }
+        }
+        // Fallback: give a generic name from the MAC's OUI prefix
+        let oui = if mac.len() >= 8 { &mac[..8] } else { mac };
+        format!("BT Device ({})", oui)
+    }
+
+    fn make_bt_device(mac: String, hostname: String) -> LanDevice {
+        LanDevice {
+            ip: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            mac,
+            hostname: Some(hostname),
+            vendor: Some("Bluetooth".to_string()),
+            first_seen: chrono::Local::now().time(),
+            last_seen: chrono::Local::now().time(),
+            is_online: true,
+            custom_name: None,
+            discovery_info: String::new(),
+            open_ports: String::new(),
+            bytes_sent: 0,
+            bytes_received: 0,
+            tick_sent: 0,
+            tick_received: 0,
+            speed_sent: 0.0,
+            speed_received: 0.0,
+        }
     }
 
     pub fn start_scan(&mut self) {
