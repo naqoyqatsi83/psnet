@@ -75,6 +75,8 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
     let tab_keys = match app.bottom_tab {
         BottomTab::Dashboard => vec![
             key_span("1-4", "Time Range"),
+            key_span("m", "Map"),
+            key_span("c", "Contrast"),
         ],
         BottomTab::Connections => vec![
             key_span("1-5", "Sort"),
