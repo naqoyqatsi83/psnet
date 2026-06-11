@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
 use crate::types::{Connection, ConnProto, TcpState};
 
+/// Connection tuple used to look up process info from `ss -tunp` output.
+type ConnTuple = (ConnProto, IpAddr, u16, IpAddr, u16);
+
 /// Parse IP and port from hex format like "0100007F:0019"
-fn parse_ip_port(s: &str) -> Option<(std::net::IpAddr, u16)> {
+fn parse_ip_port(s: &str) -> Option<(IpAddr, u16)> {
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() != 2 { return None; }
     let hex_ip = parts[0];
@@ -16,7 +20,7 @@ fn parse_ip_port(s: &str) -> Option<(std::net::IpAddr, u16)> {
         ip_u32 = (ip_u32 << 4) | nibble;
     }
     let port = u16::from_str_radix(hex_port, 16).ok()?;
-    let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::from(ip_u32));
+    let ip = IpAddr::V4(Ipv4Addr::from(ip_u32));
     Some((ip, port))
 }
 
@@ -88,8 +92,110 @@ fn build_inode_map() -> HashMap<u32, (u32, String)> {
     map
 }
 
+/// Build a process map from `ss -tunp` output, keyed by connection tuple.
+///
+/// Falls back to `ss` when `/proc/[pid]/fd/` is not readable for other users'
+/// processes. `ss` uses the netlink sock_diag interface which may have different
+/// permission characteristics.
+fn build_ss_map() -> HashMap<ConnTuple, (u32, String)> {
+    let mut map = HashMap::new();
+
+    let output = match std::process::Command::new("ss")
+        .args(["-tunp"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return map,
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 6 { continue; }
+
+        let netid = fields[0];
+        let state_str = fields[1];
+        let local = fields[4];
+        let peer = fields[5];
+
+        let proto = match netid {
+            "tcp" | "tcp6" => ConnProto::Tcp,
+            "udp" | "udp6" => ConnProto::Udp,
+            _ => continue,
+        };
+
+        let Some((local_ip, local_port)) = parse_ss_addr_port(local) else { continue };
+        let Some((remote_ip, remote_port)) = parse_ss_addr_port(peer) else { continue };
+
+        // Skip listening sockets — they have no meaningful remote and aren't
+        // useful for the connections tab (already handled by the listen filter).
+        if remote_port == 0 && fields.len() > 1 {
+            let state_upper = state_str.to_uppercase();
+            if state_upper == "LISTEN" { continue; }
+        }
+
+        // Parse process info from the Process column (field 6, may be absent)
+        let proc_field = if fields.len() > 6 { fields[6] } else { "" };
+        if proc_field.is_empty() || !proc_field.starts_with("users:") {
+            continue;
+        }
+
+        if let Some((name, pid)) = parse_ss_process_field(proc_field) {
+            let key = (proto, local_ip, local_port, remote_ip, remote_port);
+            map.entry(key).or_insert((pid, name));
+        }
+    }
+
+    map
+}
+
+/// Parse an ss address:port field like "192.168.1.1:443" or "[::1]:53".
+/// Handles "*" as port 0 (used by ss for wildcard peer ports).
+fn parse_ss_addr_port(s: &str) -> Option<(IpAddr, u16)> {
+    if s.starts_with('[') {
+        // IPv6: [addr]:port or [addr]:*
+        let closing_bracket = s.rfind(']')?;
+        let ip_str = &s[1..closing_bracket];
+        let port_str = s.get(closing_bracket + 2..)?;
+        let ip: IpAddr = ip_str.parse().ok()?;
+        let port: u16 = if port_str == "*" { 0 } else { port_str.parse().ok()? };
+        Some((ip, port))
+    } else {
+        // IPv4: addr:port or addr:*
+        let colon = s.rfind(':')?;
+        let ip_str = &s[..colon];
+        let port_str = &s[colon + 1..];
+        let ip: IpAddr = ip_str.parse().ok()?;
+        let port: u16 = if port_str == "*" { 0 } else { port_str.parse().ok()? };
+        Some((ip, port))
+    }
+}
+
+/// Parse the ss process field: `users:(("name",pid=N,fd=N))`.
+/// Extracts the first process name and pid found.
+fn parse_ss_process_field(field: &str) -> Option<(String, u32)> {
+    let name_start = field.find('"')?;
+    let rest = &field[name_start + 1..];
+    let name_end = rest.find('"')?;
+    let name = rest[..name_end].to_string();
+
+    let pid_prefix = "pid=";
+    let pid_start = field.find(pid_prefix)?;
+    let pid_str = &field[pid_start + pid_prefix.len()..];
+    let pid_end = pid_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(pid_str.len());
+    let pid: u32 = pid_str[..pid_end].parse().ok()?;
+
+    Some((name, pid))
+}
+
 /// Parse a /proc/net file (tcp, tcp6, udp, udp6) into connections
-fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool, inode_map: &HashMap<u32, (u32, String)>) -> Vec<Connection> {
+fn read_proc_net_file(
+    path: &str,
+    proto: ConnProto,
+    include_ipv6: bool,
+    inode_map: &HashMap<u32, (u32, String)>,
+    ss_map: &HashMap<ConnTuple, (u32, String)>,
+) -> Vec<Connection> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
@@ -101,7 +207,6 @@ fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool, inode_ma
     for line in lines {
         // /proc/net/tcp format:
         // sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt  uid  timeout inode
-        // fields: 0:skip, 1:local, 2:remote, 3:state, 4-6:skip, 7:uid, 8:timeout, 9:inode, 10-12:skip
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() < 10 { continue; }
         let local_addr_port = fields[1];
@@ -112,9 +217,9 @@ fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool, inode_ma
         };
         let (remote_ip, remote_port) = match parse_ip_port(remote_addr_port) {
             Some(p) => p,
-            None => (std::net::IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED), 0),
+            None => (IpAddr::from(Ipv4Addr::UNSPECIFIED), 0),
         };
-        // Clear remote for listening sockets: local_port nonzero but remote port 0
+        // Clear remote for listening sockets
         let (remote_addr, remote_port_opt) = if remote_port == 0 {
             (None, None)
         } else {
@@ -125,13 +230,19 @@ fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool, inode_ma
             if local_ip.is_ipv6() { continue; }
         }
         let state = if proto == ConnProto::Tcp {
-            parse_tcp_state(fields[3]).or(Some(crate::types::TcpState::Unknown(0)))
+            parse_tcp_state(fields[3]).or(Some(TcpState::Unknown(0)))
         } else {
             None
         };
         let inode: u32 = fields[9].parse().unwrap_or(0);
+
+        // Try inode map first, then fall back to ss-derived connection tuple map
         let (pid, proc_name) = inode_map.get(&inode)
             .map(|&(p, ref n)| (p, n.clone()))
+            .or_else(|| {
+                let ss_key = (proto, local_ip, local_port, remote_ip, remote_port);
+                ss_map.get(&ss_key).map(|&(p, ref n)| (p, n.clone()))
+            })
             .unwrap_or((0, "?".to_string()));
 
         connections.push(Connection {
@@ -150,17 +261,13 @@ fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool, inode_ma
 }
 
 pub fn fetch_connections(_pid_cache: &mut HashMap<u32, String>) -> Vec<Connection> {
-    // Build inode map once, reuse for all 4 proc/net files
     let inode_map = build_inode_map();
+    let ss_map = build_ss_map();
     let mut all = Vec::new();
-    // TCP IPv4
-    all.extend(read_proc_net_file("/proc/net/tcp", ConnProto::Tcp, false, &inode_map));
-    // TCP IPv6
-    all.extend(read_proc_net_file("/proc/net/tcp6", ConnProto::Tcp, true, &inode_map));
-    // UDP IPv4
-    all.extend(read_proc_net_file("/proc/net/udp", ConnProto::Udp, false, &inode_map));
-    // UDP IPv6
-    all.extend(read_proc_net_file("/proc/net/udp6", ConnProto::Udp, true, &inode_map));
+    all.extend(read_proc_net_file("/proc/net/tcp", ConnProto::Tcp, false, &inode_map, &ss_map));
+    all.extend(read_proc_net_file("/proc/net/tcp6", ConnProto::Tcp, true, &inode_map, &ss_map));
+    all.extend(read_proc_net_file("/proc/net/udp", ConnProto::Udp, false, &inode_map, &ss_map));
+    all.extend(read_proc_net_file("/proc/net/udp6", ConnProto::Udp, true, &inode_map, &ss_map));
     all
 }
 
