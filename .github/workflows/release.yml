@@ -242,7 +242,15 @@ jobs:
           mkdir -p "${{ runner.temp }}/upload"
           find "${{ runner.temp }}/artifacts" -type f -exec cp {} "${{ runner.temp }}/upload/" \;
 
-      - name: Create release
+      - name: Upload all artifacts (manual run, no release)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: psnet-all-artifacts
+          path: ${{ runner.temp }}/upload/
+
+      - name: Create release (tag push only)
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           name: psnet v${{ env.VERSION_STRIPPED }}
