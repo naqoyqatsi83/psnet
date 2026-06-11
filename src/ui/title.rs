@@ -58,9 +58,15 @@ pub fn draw_title_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut title_parts = vec![
         Span::styled(
-            " \u{25C8} PSNET ",
+            " \u{25C8} PSNET",
             Style::default()
                 .fg(Color::Rgb(80, 200, 255))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" v{} ", env!("CARGO_PKG_VERSION")),
+            Style::default()
+                .fg(Color::Rgb(120, 150, 200))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(

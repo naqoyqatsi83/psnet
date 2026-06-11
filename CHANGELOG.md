@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OUI vendor lookup from embedded database** — 35,000+ MAC prefix database resolves device manufacturers (Apple, Dell, Intel, etc.) in Devices and Networks tabs
 - **Color-coded toast messages** — orange for permission/firewall warnings, green for normal status messages
 - **PID column in Connections view** — shows process PID next to process name
+- **Version display in title bar** — shows `v1.1.0` next to "◈ PSNET" in the header
 
 ### Changed
 
