@@ -62,13 +62,15 @@ jobs:
             cargo build --release --target ${{ matrix.arch.rust_target }}
           else
             # ARM64: build inside Docker with Debian Bullseye (glibc 2.31)
+            # Use single quotes to avoid escaping issues with $HOME inside the container
             docker run --platform linux/arm64 --rm -v ${{ github.workspace }}:/work -w /work \
-              debian:bullseye-slim bash -c "
+              debian:bullseye-slim bash -c '
+                set -e
                 apt-get update -qq && apt-get install -y -qq curl libpcap-dev build-essential > /dev/null
-                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-                source \\\$HOME/.cargo/env
+                curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+                . "$HOME/.cargo/env"
                 cargo build --release
-              "
+              '
             sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
             sudo cp ${{ github.workspace }}/target/release/psnet target/${{ matrix.arch.rust_target }}/release/psnet
           fi
