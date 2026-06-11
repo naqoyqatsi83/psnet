@@ -204,7 +204,7 @@ jobs:
             printf '\n'
             printf '%%changelog\n'
             printf '* Thu Jun 10 2026 naqoyqatsi83 <naqoyqatsi83@users.noreply.github.com> - %s\n' "$VERSION"
-            printf '- Initial Linux port release\n'
+            printf '%s\n' '- Initial Linux port release'
           } > $HOME/rpmbuild/SPECS/psnet.spec
 
           # Copy binary to SOURCES
