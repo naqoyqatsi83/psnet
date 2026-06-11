@@ -77,6 +77,44 @@ impl NetworksScanner {
         &self.networks
     }
 
+    /// Scan for paired Bluetooth devices using bluetoothctl (instant).
+    fn scan_bluetooth_devices() -> Vec<LanDevice> {
+        // List paired devices — instant, no inquiry delay
+        let output = Command::new("bluetoothctl")
+            .args(["paired-devices"])
+            .output();
+        let Ok(output) = output else { return Vec::new() };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut devices = Vec::new();
+        for line in text.lines() {
+            // Format: "Device 00:11:22:33:44:55 Device Name"
+            let parts: Vec<&str> = line.splitn(3, ' ').collect();
+            if parts.len() < 3 { continue; }
+            if parts[0] != "Device" { continue; }
+            let mac = parts[1].to_uppercase();
+            let name = parts[2].to_string();
+            devices.push(LanDevice {
+                ip: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                mac,
+                hostname: Some(name),
+                vendor: Some("Bluetooth".to_string()),
+                first_seen: chrono::Local::now().time(),
+                last_seen: chrono::Local::now().time(),
+                is_online: true,
+                custom_name: None,
+                discovery_info: String::new(),
+                open_ports: String::new(),
+                bytes_sent: 0,
+                bytes_received: 0,
+                tick_sent: 0,
+                tick_received: 0,
+                speed_sent: 0.0,
+                speed_received: 0.0,
+            });
+        }
+        devices
+    }
+
     pub fn start_scan(&mut self) {
         self.scanning = true;
         let mut nets = Vec::new();
@@ -119,7 +157,7 @@ impl NetworksScanner {
                 NetworkCategory::Wsl
             } else if iface_lower.contains("hyperv") || iface_lower.contains("vm") || iface_lower.contains("virtual") {
                 NetworkCategory::HyperV
-            } else if iface_lower.contains("bluetooth") {
+            } else if iface_lower.contains("bluetooth") || iface_lower.contains("bnep") {
                 NetworkCategory::Bluetooth
             } else {
                 NetworkCategory::Secondary
@@ -176,6 +214,70 @@ impl NetworksScanner {
                 devices: vec![device],
             });
         }
+        // ─── Bluetooth adapter detection ─────────────────────────────
+        // Check if hci0 exists (BT adapter). If no BT network was added
+        // from ip addr (e.g. bnep0 not connected), create one for the adapter.
+        let bt_adapter_exists = fs::read_dir("/sys/class/bluetooth")
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+
+        if bt_adapter_exists {
+            let already_has_bt = nets.iter().any(|n| n.category == NetworkCategory::Bluetooth);
+            if !already_has_bt {
+                // Read adapter MAC
+                let bt_mac = fs::read_to_string("/sys/class/bluetooth/hci0/address")
+                    .map(|s| s.trim().to_string().to_uppercase())
+                    .unwrap_or_default();
+                // Read adapter name
+                let bt_name = fs::read_to_string("/sys/class/bluetooth/hci0/name")
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "Bluetooth Adapter".to_string());
+
+                // Get paired devices from bluetoothctl (instant, no scan delay)
+                let bt_devices = Self::scan_bluetooth_devices();
+
+                nets.push(RemoteNetwork {
+                    name: bt_name,
+                    network: "N/A".to_string(),
+                    netmask: "N/A".to_string(),
+                    gateway: None,
+                    category: NetworkCategory::Bluetooth,
+                    metric: 0,
+                    iface: "hci0".to_string(),
+                    devices: bt_devices,
+                });
+
+                // If adapter has no MAC-based device entry, add one
+                if !bt_mac.is_empty() && !nets.iter().any(|n| {
+                    n.devices.iter().any(|d| d.mac == bt_mac)
+                }) {
+                    if let Some(last) = nets.last_mut() {
+                        let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
+                            .ok()
+                            .map(|s| s.trim().to_string());
+                        last.devices.push(LanDevice {
+                            ip: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                            mac: bt_mac,
+                            hostname,
+                            vendor: Some("Bluetooth Adapter".to_string()),
+                            first_seen: chrono::Local::now().time(),
+                            last_seen: chrono::Local::now().time(),
+                            is_online: true,
+                            custom_name: None,
+                            discovery_info: String::new(),
+                            open_ports: String::new(),
+                            bytes_sent: 0,
+                            bytes_received: 0,
+                            tick_sent: 0,
+                            tick_received: 0,
+                            speed_sent: 0.0,
+                            speed_received: 0.0,
+                        });
+                    }
+                }
+            }
+        }
+
         self.networks = nets;
         self.results_ready = true;
         self.scanning = false;
