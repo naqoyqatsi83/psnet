@@ -60,5 +60,15 @@ impl FirewallManager {
     pub fn reset_all_psnet_rules(&mut self) {}
     pub fn get_app_action(&self, _: &str) -> Option<&FirewallAppAction> { None }
     pub fn toggle_default_policy(&mut self) {}
-    pub fn effective_status(&self, _: &str) -> (&'static str, bool) { ("UNKNOWN", false) }
+    pub fn effective_status(&self, name: &str) -> (&'static str, bool) {
+        if self.blocked_apps.contains(name) {
+            return ("BLOCKED", true);
+        }
+        match self.app_actions.get(name) {
+            Some(FirewallAppAction::Deny) => ("DENY", true),
+            Some(FirewallAppAction::Drop) => ("DROP", true),
+            Some(FirewallAppAction::Allow) => ("ALLOW", false),
+            None => ("ALLOWED", false),
+        }
+    }
 }

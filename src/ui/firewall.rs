@@ -299,9 +299,9 @@ fn draw_firewall_apps(
                     let status_color = match status_str {
                         "DENY" => Color::Rgb(255, 80, 80),
                         "DROP" => Color::Rgb(255, 140, 40),
-                        "ALLOW" => Color::Rgb(80, 200, 255),
+                        "ALLOW" | "ALLOWED" => Color::Rgb(80, 200, 120),
                         "BLOCKED" => Color::Rgb(255, 80, 80),
-                        _ => Color::Rgb(80, 200, 120), // ALLOWED
+                        _ => Color::Rgb(80, 200, 120),
                     };
 
                     let prefix = if is_selected { "\u{25b6} " } else { "  " };
