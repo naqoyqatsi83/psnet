@@ -42,8 +42,12 @@ impl NetworksScanner {
     }
 
     pub fn tick(&mut self) {
+        if self.scan_tick == 0 {
+            // Scan immediately on first tick
+            self.start_scan();
+        }
         self.scan_tick += 1;
-        if self.scan_tick % 30 == 0 {
+        if self.scan_tick % 2 == 0 {
             self.start_scan();
         }
     }
