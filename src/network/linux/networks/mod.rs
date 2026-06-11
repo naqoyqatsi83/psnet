@@ -5,6 +5,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crate::network::oui::lookup as oui_lookup;
 use crate::types::{LanDevice, NetworkCategory};
 
 #[derive(Debug, Clone)]
@@ -173,11 +174,12 @@ impl NetworksScanner {
                 existing.is_online = true;
                 existing.last_seen = now;
             } else {
+                let bt_vendor = oui_lookup(&mac).unwrap_or("Bluetooth").to_string();
                 self.known_bt_devices.push(LanDevice {
                     ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     mac,
                     hostname: Some(name),
-                    vendor: Some("Bluetooth".to_string()),
+                    vendor: Some(bt_vendor),
                     first_seen: now,
                     last_seen: now,
                     is_online: true,
@@ -341,11 +343,12 @@ impl NetworksScanner {
                         let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
                             .ok()
                             .map(|s| s.trim().to_string());
+                        let adapter_vendor = oui_lookup(&bt_mac).unwrap_or("Raspberry Pi").to_string();
                         last.devices.push(LanDevice {
                             ip: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                             mac: bt_mac,
                             hostname,
-                            vendor: Some("Bluetooth Adapter".to_string()),
+                            vendor: Some(adapter_vendor),
                             first_seen: chrono::Local::now().time(),
                             last_seen: chrono::Local::now().time(),
                             is_online: true,
