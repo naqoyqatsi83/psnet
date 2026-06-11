@@ -20,31 +20,21 @@ jobs:
             pkg_suffix: x86_64
             syslib: libpcap0.8
             libc_min: "2.31"
-            runner: ubuntu-20.04
+            runner: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             rust_target: aarch64-unknown-linux-gnu
             deb_arch: arm64
             pkg_suffix: aarch64
             syslib: libpcap0.8
             libc_min: "2.31"
-            runner: ubuntu-22.04
+            runner: ubuntu-latest
     runs-on: ${{ matrix.arch.runner }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install native dependencies (x86_64)
-        if: matrix.arch.target == 'x86_64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y libpcap0.8-dev
-
       - name: Set up QEMU for ARM64
-        if: matrix.arch.target != 'x86_64-unknown-linux-gnu'
+        if: matrix.arch.target == 'aarch64-unknown-linux-gnu'
         uses: docker/setup-qemu-action@v4
-
-      - name: Cache cargo
-        uses: actions/cache@v5
-        with:
-          path: ~/.cargo
-          key: ${{ runner.os }}-cargo-${{ matrix.arch.target }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Determine version
         run: |
@@ -57,23 +47,21 @@ jobs:
 
       - name: Build release (${{ matrix.arch.target }})
         run: |
-          if [ "${{ matrix.arch.target }}" = "x86_64-unknown-linux-gnu" ]; then
-            # Native build on ubuntu-20.04 → glibc 2.31, compatible with all newer
-            cargo build --release --target ${{ matrix.arch.rust_target }}
-          else
-            # ARM64: build inside Docker with Debian Bullseye (glibc 2.31)
-            # Use single quotes to avoid escaping issues with $HOME inside the container
-            docker run --platform linux/arm64 --rm -v ${{ github.workspace }}:/work -w /work \
-              debian:bullseye-slim bash -c '
-                set -e
-                apt-get update -qq && apt-get install -y -qq curl libpcap-dev build-essential > /dev/null
-                curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-                . "$HOME/.cargo/env"
-                cargo build --release
-              '
-            sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
-            sudo cp ${{ github.workspace }}/target/release/psnet target/${{ matrix.arch.rust_target }}/release/psnet
+          PLATFORM_FLAG=""
+          if [ "${{ matrix.arch.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            PLATFORM_FLAG="--platform linux/arm64"
           fi
+          # Build inside Debian Bullseye (glibc 2.31) for compatibility with older distros
+          docker run $PLATFORM_FLAG --rm -v ${{ github.workspace }}:/work -w /work \
+            debian:bullseye-slim bash -c '
+            set -e
+            apt-get update -qq && apt-get install -y -qq curl libpcap-dev build-essential > /dev/null
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            . "$HOME/.cargo/env"
+            cargo build --release
+          '
+          sudo mkdir -p target/${{ matrix.arch.rust_target }}/release
+          sudo cp ${{ github.workspace }}/target/release/psnet target/${{ matrix.arch.rust_target }}/release/psnet
 
       - name: Create .deb package (${{ matrix.arch.deb_arch }})
         run: |
