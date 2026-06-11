@@ -1,4 +1,5 @@
-use std::net::Ipv4Addr;
+use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -119,6 +120,43 @@ impl NetworksScanner {
             } else {
                 NetworkCategory::Secondary
             };
+
+            // Get MAC address for this interface
+            let mac_addr = fs::read_to_string(format!("/sys/class/net/{}/address", iface))
+                .map(|s| s.trim().to_string().to_uppercase())
+                .unwrap_or_default();
+
+            // Get operational state (UP/DOWN)
+            let operstate = fs::read_to_string(format!("/sys/class/net/{}/operstate", iface))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            let is_online = operstate == "up";
+
+            // Get hostname for this machine
+            let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
+                .ok()
+                .map(|s| s.trim().to_string());
+
+            // Build a device entry for this interface
+            let device = LanDevice {
+                ip: IpAddr::V4(ip),
+                mac: mac_addr,
+                hostname: hostname.clone(),
+                vendor: None,
+                first_seen: chrono::Local::now().time(),
+                last_seen: chrono::Local::now().time(),
+                is_online,
+                custom_name: None,
+                discovery_info: String::new(),
+                open_ports: String::new(),
+                bytes_sent: 0,
+                bytes_received: 0,
+                tick_sent: 0,
+                tick_received: 0,
+                speed_sent: 0.0,
+                speed_received: 0.0,
+            };
+
             let name = iface.to_string();
             let network = format!("{}/{}", network_addr, prefix);
             let netmask_str = netmask.to_string();
@@ -131,7 +169,7 @@ impl NetworksScanner {
                 category,
                 metric,
                 iface: iface.to_string(),
-                devices: Vec::new(),
+                devices: vec![device],
             });
         }
         self.networks = nets;

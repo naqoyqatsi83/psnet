@@ -89,13 +89,12 @@ fn build_inode_map() -> HashMap<u32, (u32, String)> {
 }
 
 /// Parse a /proc/net file (tcp, tcp6, udp, udp6) into connections
-fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool) -> Vec<Connection> {
+fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool, inode_map: &HashMap<u32, (u32, String)>) -> Vec<Connection> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
     let mut connections = Vec::new();
-    let inode_map = build_inode_map();
     let mut lines = content.lines();
     // Skip header line
     if lines.next().is_none() { return connections; }
@@ -151,16 +150,17 @@ fn read_proc_net_file(path: &str, proto: ConnProto, include_ipv6: bool) -> Vec<C
 }
 
 pub fn fetch_connections(_pid_cache: &mut HashMap<u32, String>) -> Vec<Connection> {
-    // Include IPv4 files; optionally include IPv6 later
+    // Build inode map once, reuse for all 4 proc/net files
+    let inode_map = build_inode_map();
     let mut all = Vec::new();
     // TCP IPv4
-    all.extend(read_proc_net_file("/proc/net/tcp", ConnProto::Tcp, false));
+    all.extend(read_proc_net_file("/proc/net/tcp", ConnProto::Tcp, false, &inode_map));
     // TCP IPv6
-    all.extend(read_proc_net_file("/proc/net/tcp6", ConnProto::Tcp, true));
+    all.extend(read_proc_net_file("/proc/net/tcp6", ConnProto::Tcp, true, &inode_map));
     // UDP IPv4
-    all.extend(read_proc_net_file("/proc/net/udp", ConnProto::Udp, false));
+    all.extend(read_proc_net_file("/proc/net/udp", ConnProto::Udp, false, &inode_map));
     // UDP IPv6
-    all.extend(read_proc_net_file("/proc/net/udp6", ConnProto::Udp, true));
+    all.extend(read_proc_net_file("/proc/net/udp6", ConnProto::Udp, true, &inode_map));
     all
 }
 
