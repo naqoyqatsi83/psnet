@@ -9,7 +9,7 @@ homepage = "https://github.com/naqoyqatsi83/psnet"
 readme = "README.md"
 keywords = ["network", "monitor", "tui", "terminal", "cross-platform"]
 categories = ["command-line-utilities", "network-programming"]
-exclude = [".github/", "choco/", "target/", "image.png", ".playwright-mcp/"]
+exclude = [".github/", "target/", "image.png"]
 
 [dependencies]
 ratatui = "0.29"
