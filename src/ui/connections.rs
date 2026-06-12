@@ -174,10 +174,8 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
 
             let pid_str = if conn.pid > 0 {
                 conn.pid.to_string()
-            } else if conn.uid > 0 {
-                format!("UID:{}", conn.uid)
             } else {
-                "UID:0".to_string()
+                "-".to_string()
             };
 
             Row::new(vec![

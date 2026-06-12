@@ -107,10 +107,6 @@ pub struct Connection {
     pub state: Option<TcpState>,
     pub pid: u32,
     pub process_name: String,
-    /// Socket owner UID from `/proc/net/tcp` (field 7).
-    /// Always available even without privileges — used as fallback when
-    /// PID can't be resolved (e.g. other users' processes).
-    pub uid: u32,
     /// DNS-resolved hostname for remote address (if available).
     pub dns_hostname: Option<String>,
 }
