@@ -5,6 +5,14 @@ All notable changes to PSNET are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-06-12
+
+### Fixed
+
+- **Firewall cgroupv2 syntax** — fixed `socket cgroupv2` syntax to use the required `level <N>` keyword form (bare path syntax not supported on all nftables builds)
+- **UID fallback too broad** — per-app blocking no longer falls through to `meta skuid` UID rules when cgroupv2 succeeds, and UID rules are restricted to system service UIDs (< 1000) only. Fixes Firefox block affecting Spotify/Chrome
+- **iptables fallback** — switched from `iptables` to `iptables-legacy` on systems where the nft-backed iptables doesn't support `-m cgroup --path`
+
 ## [1.1.0] - 2026-06-11
 
 ### Added

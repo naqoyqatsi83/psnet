@@ -4,10 +4,9 @@
 //! have `CAP_NET_ADMIN`).  Every rule we add goes into the `inet psnet-filter`
 //! table so it can be cleanly managed and removed.
 //!
-//! Where the running nftables version doesn't support `socket cgroupv2 "<path>"`
-//! (which requires nftables >= 1.0.0), we fall back to `iptables -m cgroup --path`
-//! for per-app cgroupv2 path matching.  The kernel supports path-based matching
-//! since 4.19, but the nftables userspace tool may lag behind.
+//! Where the running nftables version doesn't support `socket cgroupv2 level <N> "<path>"`
+//! we fall back to `iptables-legacy -m cgroup --path` for per-app cgroupv2 path
+//! matching.  The kernel supports path-based matching since 4.19.
 //!
 //! # Permission model
 //! The binary needs `CAP_NET_ADMIN` for nft write operations and `CAP_NET_ADMIN`
@@ -24,11 +23,30 @@ use crate::types::FirewallAppAction;
 /// nftables match keyword for socket UID (probed at runtime).
 static UID_KEYWORD: OnceLock<&'static str> = OnceLock::new();
 
-/// Whether `socket cgroupv2 "<path>"` string syntax is supported.
+/// Whether `socket cgroupv2 level <N> "<path>"` syntax is supported.
 static CGROUPV2_PATH_SUPPORTED: OnceLock<bool> = OnceLock::new();
 
 /// Whether `iptables -m cgroup --path "<path>"` is available as fallback.
 static IPTABLES_CGROUP_SUPPORTED: OnceLock<bool> = OnceLock::new();
+
+/// Cached iptables binary name (prefer `iptables-legacy`).
+static IPTABLES_BIN: OnceLock<&'static str> = OnceLock::new();
+
+/// Return the best iptables binary: iptables-legacy if available, else iptables.
+fn iptables_bin() -> &'static str {
+    IPTABLES_BIN.get_or_init(|| {
+        if Command::new("iptables-legacy")
+            .arg("--version")
+            .output()
+            .ok()
+            .map_or(false, |o| o.status.success())
+        {
+            "iptables-legacy"
+        } else {
+            "iptables"
+        }
+    })
+}
 
 /// Which invocation method we use to run nft write operations.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,36 +109,38 @@ fn probe_uid_keyword() -> &'static str {
 }
 
 /// Probe cgroupv2 path syntax in nftables.
+///
+/// Uses the `socket cgroupv2 level <N> "<path>"` form (the bare path syntax
+/// without `level` is not supported by all nftables builds).
 fn probe_cgroupv2_path_syntax() -> bool {
-    let r = nft_stdin("add rule inet psnet-filter output socket cgroupv2 \"/\" drop\n");
+    let r = nft_stdin(
+        "add rule inet psnet-filter output socket cgroupv2 level 1 \"system.slice\" drop\n",
+    );
     let _ = nft_stdin("flush chain inet psnet-filter output\n");
     r.is_ok()
 }
 
 /// Probe iptables -m cgroup --path support (fallback for cgroupv2 blocking).
 fn probe_iptables_cgroup() -> bool {
-    // First check iptables is available.
-    let Ok(ver) = Command::new("iptables").arg("--version").output() else {
-        return false;
-    };
-    if !ver.status.success() {
+    let bin = iptables_bin();
+    if bin.is_empty() {
         return false;
     }
     // Try adding a test rule with cgroup path "/".
     // Use -w (wait) to avoid "another app is holding xtables lock" errors.
-    let add = Command::new("iptables")
+    let add = Command::new(bin)
         .args(["-C", "OUTPUT", "-m", "cgroup", "--path", "/", "-j", "DROP", "-w", "2"])
         .output();
     if add.ok().map_or(false, |o| o.status.success()) {
         // Rule already exists (from a previous run), that's fine.
         return true;
     }
-    let add = Command::new("iptables")
+    let add = Command::new(bin)
         .args(["-A", "OUTPUT", "-m", "cgroup", "--path", "/", "-j", "DROP", "-w", "2"])
         .output();
     let ok = add.ok().map_or(false, |o| o.status.success());
     // Remove the test rule.
-    let _ = Command::new("iptables")
+    let _ = Command::new(bin)
         .args(["-D", "OUTPUT", "-m", "cgroup", "--path", "/", "-j", "DROP", "-w", "2"])
         .output();
     ok
@@ -174,26 +194,27 @@ pub fn ensure_table() -> bool {
 
 /// Create the PSNET-CGROUP iptables chain and hook it into OUTPUT.
 fn init_iptables_cgroup_chain() -> bool {
+    let bin = iptables_bin();
     // Remove any residual chain from a previous crashed process.
-    let _ = Command::new("iptables")
+    let _ = Command::new(bin)
         .args(["-D", "OUTPUT", "-j", "PSNET-CGROUP", "-w", "2"])
         .output();
-    let _ = Command::new("iptables")
+    let _ = Command::new(bin)
         .args(["-F", "PSNET-CGROUP", "-w", "2"])
         .output();
-    let _ = Command::new("iptables")
+    let _ = Command::new(bin)
         .args(["-X", "PSNET-CGROUP", "-w", "2"])
         .output();
 
     // Create the custom chain.
-    let r1 = Command::new("iptables")
+    let r1 = Command::new(bin)
         .args(["-N", "PSNET-CGROUP", "-w", "2"])
         .output();
     if !r1.ok().map_or(false, |o| o.status.success()) {
         return false;
     }
     // Hook it into the OUTPUT chain.
-    let r2 = Command::new("iptables")
+    let r2 = Command::new(bin)
         .args(["-I", "OUTPUT", "1", "-j", "PSNET-CGROUP", "-w", "2"])
         .output();
     r2.ok().map_or(false, |o| o.status.success())
@@ -201,7 +222,8 @@ fn init_iptables_cgroup_chain() -> bool {
 
 /// Add a rule matching a cgroupv2 path via iptables.
 pub fn add_iptables_cgroup_rule(path: &str) -> bool {
-    match Command::new("iptables")
+    let bin = iptables_bin();
+    match Command::new(bin)
         .args(["-A", "PSNET-CGROUP", "-m", "cgroup", "--path", path, "-j", "DROP", "-w", "2"])
         .output()
     {
@@ -213,7 +235,8 @@ pub fn add_iptables_cgroup_rule(path: &str) -> bool {
 
 /// Remove a rule matching a cgroupv2 path via iptables.
 pub fn remove_iptables_cgroup_rule(path: &str) -> bool {
-    let r = Command::new("iptables")
+    let bin = iptables_bin();
+    let r = Command::new(bin)
         .args(["-D", "PSNET-CGROUP", "-m", "cgroup", "--path", path, "-j", "DROP", "-w", "2"])
         .output();
     r.ok().map_or(false, |o| o.status.success())
@@ -221,13 +244,14 @@ pub fn remove_iptables_cgroup_rule(path: &str) -> bool {
 
 /// Flush and remove the PSNET-CGROUP iptables chain.
 pub fn cleanup_iptables_cgroup() {
-    let _ = Command::new("iptables")
+    let bin = iptables_bin();
+    let _ = Command::new(bin)
         .args(["-D", "OUTPUT", "-j", "PSNET-CGROUP", "-w", "2"])
         .output();
-    let _ = Command::new("iptables")
+    let _ = Command::new(bin)
         .args(["-F", "PSNET-CGROUP", "-w", "2"])
         .output();
-    let _ = Command::new("iptables")
+    let _ = Command::new(bin)
         .args(["-X", "PSNET-CGROUP", "-w", "2"])
         .output();
 }
@@ -314,8 +338,11 @@ pub fn get_cgroupv2_path(pid: u32) -> Option<String> {
     None
 }
 
-/// Add an nftables rule matching a cgroupv2 path (using `socket cgroupv2`).
+/// Add an nftables rule matching a cgroupv2 path (using `socket cgroupv2 level <N>`).
 /// Returns None when the path syntax isn't supported by the running nftables.
+///
+/// Uses the mandatory `level <N>` syntax for cross-compatibility (bare path
+/// syntax isn't supported by all nftables builds).
 pub fn add_rule_cgroup(path: &str, action: &FirewallAppAction) -> Option<u64> {
     if !CGROUPV2_PATH_SUPPORTED.get().copied().unwrap_or(false) {
         return None;
@@ -324,9 +351,12 @@ pub fn add_rule_cgroup(path: &str, action: &FirewallAppAction) -> Option<u64> {
         FirewallAppAction::Deny | FirewallAppAction::Drop => "drop",
         FirewallAppAction::Allow => return None,
     };
+    // Strip leading / and compute the ancestor level count.
+    let stripped = path.trim_start_matches('/');
+    let level = stripped.split('/').count().max(1);
     let cmd = format!(
-        "add rule inet psnet-filter output socket cgroupv2 \"{}\" {}\n",
-        path, action_str
+        "add rule inet psnet-filter output socket cgroupv2 level {} \"{}\" {}\n",
+        level, stripped, action_str
     );
     match nft_stdin(&cmd) {
         Ok(_) => extract_last_handle(),

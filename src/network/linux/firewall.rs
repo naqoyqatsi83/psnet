@@ -542,42 +542,47 @@ impl FirewallManager {
             }
 
             // ── UID fallback (for system services) ──────────────
-            let self_uid = unsafe { libc::geteuid() };
-            let live_uids: Vec<u32> = pids
-                .iter()
-                .filter_map(|pid| {
-                    let uid = nftables::get_uid_for_pid(*pid)?;
-                    if uid == self_uid { None } else { Some(uid) }
-                })
-                .collect();
-            let known_uids = self.uid_map.get(name).cloned().unwrap_or_default();
+            // Only used when NO cgroup method is available, and only for
+            // system service UIDs (< 1000).  Blocking user UIDs (>= 1000)
+            // would block all processes under that user.
+            if !nft_cgroup_available && !ipt_cgroup_ok {
+                let self_uid = unsafe { libc::geteuid() };
+                let live_uids: Vec<u32> = pids
+                    .iter()
+                    .filter_map(|pid| {
+                        let uid = nftables::get_uid_for_pid(*pid)?;
+                        if uid == self_uid || uid >= 1000 { None } else { Some(uid) }
+                    })
+                    .collect();
+                let known_uids = self.uid_map.get(name).cloned().unwrap_or_default();
 
-            for uid in &live_uids {
-                if !known_uids.contains(uid) {
-                    if let Some(handle) = nftables::add_rule_uid(*uid, action) {
-                        self.rule_handles
-                            .entry(name.clone())
-                            .or_default()
-                            .push((handle, format!("meta uid {uid}")));
-                    }
-                }
-            }
-            for uid in &known_uids {
-                if !live_uids.contains(uid) {
-                    if let Some(handles) = self.rule_handles.get(name) {
-                        let to_remove: Vec<u64> = handles
-                            .iter()
-                            .filter(|(_, desc)| desc.contains(&format!("meta uid {uid}")))
-                            .map(|(h, _)| *h)
-                            .collect();
-                        for h in to_remove {
-                            let _ = nftables::remove_rule(h);
+                for uid in &live_uids {
+                    if !known_uids.contains(uid) {
+                        if let Some(handle) = nftables::add_rule_uid(*uid, action) {
+                            self.rule_handles
+                                .entry(name.clone())
+                                .or_default()
+                                .push((handle, format!("meta uid {uid}")));
                         }
                     }
                 }
-            }
-            if live_uids != known_uids {
-                self.uid_map.insert(name.clone(), live_uids);
+                for uid in &known_uids {
+                    if !live_uids.contains(uid) {
+                        if let Some(handles) = self.rule_handles.get(name) {
+                            let to_remove: Vec<u64> = handles
+                                .iter()
+                                .filter(|(_, desc)| desc.contains(&format!("meta uid {uid}")))
+                                .map(|(h, _)| *h)
+                                .collect();
+                            for h in to_remove {
+                                let _ = nftables::remove_rule(h);
+                            }
+                        }
+                    }
+                }
+                if live_uids != known_uids {
+                    self.uid_map.insert(name.clone(), live_uids);
+                }
             }
         }
     }
@@ -585,12 +590,14 @@ impl FirewallManager {
     /// Add nftables rules for a blocked app.
     ///
     /// Strategy (most-to-least preferred):
-    /// 1. **cgroupv2 `socket cgroupv2 "<path>"`** — matches the app's systemd
-    ///    scope unit, works regardless of UID.  Only matches that specific
-    ///    process group, not all apps under the same user.
-    /// 2. **UID `meta uid <N>`** — cheaper but matches ALL processes under that
-    ///    UID (so doesn't work for user UID 1000).  Used for system services
-    ///    that have their own dedicated UID.
+    /// 1. **cgroupv2 `socket cgroupv2 level <N> "<path>"`** — matches the app's
+    ///    systemd scope unit.  Only that scope's sockets match (descendant-only
+    ///    via `cgroup_is_descendant`).  This is the only method that works for
+    ///    user UIDs (>= 1000).
+    /// 2. **iptables `-m cgroup --path "<path>"`** — fallback when nftables
+    ///    doesn't support `socket cgroupv2` with the `level` syntax.
+    /// 3. **UID `meta skuid <N>`** — matches ALL processes under that UID, so
+    ///    only safe for system service UIDs (< 1000) where the UID is dedicated.
     fn add_block_rules(
         &mut self,
         app_name: &str,
@@ -603,6 +610,7 @@ impl FirewallManager {
         }
 
         let self_uid = unsafe { libc::geteuid() };
+        let mut any_cgroup_success = false;
         let mut uid_fallbacks = Vec::new();
         let nft_cgroup_ok = nftables::cgroupv2_path_supported();
         let ipt_cgroup_ok = nftables::iptables_cgroup_supported();
@@ -629,7 +637,7 @@ impl FirewallManager {
                 }
             }
 
-            // Fallback: iptables -m cgroup --path (if nft cgroup syntax unsupported).
+            // Fallback: iptables -m cgroup --path.
             if !cgroup_worked && ipt_cgroup_ok {
                 if let Some(ref path) = nftables::get_cgroupv2_path(*pid) {
                     if path.contains(".scope") || path.contains(".service") {
@@ -645,27 +653,35 @@ impl FirewallManager {
             }
 
             if cgroup_worked {
+                any_cgroup_success = true;
                 continue;
             }
 
-            // Fallback: UID (only if different from self).
-            if let Some(uid) = nftables::get_uid_for_pid(*pid) {
-                if uid != self_uid {
-                    uid_fallbacks.push(uid);
+            // UID fallback — only for system service UIDs (< 1000) AND only
+            // when NO pid for this app could use cgroup-based blocking (UID
+            // is too broad — it blocks all apps under that user).
+            if !any_cgroup_success {
+                if let Some(uid) = nftables::get_uid_for_pid(*pid) {
+                    if uid != self_uid && uid < 1000 {
+                        uid_fallbacks.push(uid);
+                    }
                 }
             }
         }
 
-        for uid in &uid_fallbacks {
-            if let Some(handle) = nftables::add_rule_uid(*uid, action) {
-                self.rule_handles
-                    .entry(app_name.to_string())
-                    .or_default()
-                    .push((handle, format!("meta uid {uid}")));
+        // Only add UID rules if cgroup-based blocking completely failed.
+        if !any_cgroup_success {
+            for uid in &uid_fallbacks {
+                if let Some(handle) = nftables::add_rule_uid(*uid, action) {
+                    self.rule_handles
+                        .entry(app_name.to_string())
+                        .or_default()
+                        .push((handle, format!("meta uid {uid}")));
+                }
             }
-        }
-        if !uid_fallbacks.is_empty() {
-            self.uid_map.insert(app_name.to_string(), uid_fallbacks);
+            if !uid_fallbacks.is_empty() {
+                self.uid_map.insert(app_name.to_string(), uid_fallbacks);
+            }
         }
     }
 
@@ -698,9 +714,10 @@ impl FirewallManager {
             let ipt_cgroup_ok = nftables::iptables_cgroup_supported();
             let cgroup_enforceable = (nft_cgroup_ok || ipt_cgroup_ok)
                 && pids.iter().any(|pid| has_scope_path(*pid));
+            // UID blocking is only viable for system service UIDs (< 1000).
             let uid_enforceable = pids.iter().any(|pid| {
                 nftables::get_uid_for_pid(*pid)
-                    .map(|uid| uid != self_uid)
+                    .map(|uid| uid != self_uid && uid < 1000)
                     .unwrap_or(false)
             });
 
