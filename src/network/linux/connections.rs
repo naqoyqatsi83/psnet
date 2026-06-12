@@ -44,12 +44,16 @@ fn parse_tcp_state(state_str: &str) -> Option<TcpState> {
     }
 }
 
-/// Build a map from socket inode -> (pid, process_name)
-fn build_inode_map() -> HashMap<u32, (u32, String)> {
-    let mut map = HashMap::new();
+/// Build a map from socket inode -> (pid, process_name).
+///
+/// Also returns a secondary UID→process_name map for use when inode
+/// resolution fails (process owned by a different user).
+fn build_inode_maps() -> (HashMap<u32, (u32, String)>, HashMap<u32, String>) {
+    let mut inode_map = HashMap::new();
+    let mut uid_name_map: HashMap<u32, String> = HashMap::new();
     let proc_dir = match fs::read_dir("/proc") {
         Ok(d) => d,
-        Err(_) => return map,
+        Err(_) => return (inode_map, uid_name_map),
     };
     for entry in proc_dir {
         let entry = match entry { Ok(e) => e, Err(_) => continue };
@@ -68,6 +72,11 @@ fn build_inode_map() -> HashMap<u32, (u32, String)> {
             Ok(name) => name.trim().to_string(),
             Err(_) => continue,
         };
+        // Read UID from /proc/[pid]/status (world-readable)
+        let uid = read_uid_for_pid(pid);
+        if let Some(uid) = uid {
+            uid_name_map.entry(uid).or_insert_with(|| proc_name.clone());
+        }
         // Scan file descriptors for socket inodes
         let fd_dir_path = format!("/proc/{}/fd", pid);
         let fd_dir = match fs::read_dir(&fd_dir_path) {
@@ -84,13 +93,24 @@ fn build_inode_map() -> HashMap<u32, (u32, String)> {
                 if link_str.starts_with("socket:[") && link_str.ends_with(']') {
                     let inode_str = &link_str[8..link_str.len()-1];
                     if let Ok(inode) = inode_str.parse::<u32>() {
-                        map.entry(inode).or_insert((pid, proc_name.clone()));
+                        inode_map.entry(inode).or_insert((pid, proc_name.clone()));
                     }
                 }
             }
         }
     }
-    map
+    (inode_map, uid_name_map)
+}
+
+/// Read the real UID from /proc/[pid]/status.
+fn read_uid_for_pid(pid: u32) -> Option<u32> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        if line.starts_with("Uid:") {
+            return line.split_whitespace().nth(1)?.parse().ok();
+        }
+    }
+    None
 }
 
 /// Build a process map from `ss -tunp` output, keyed by connection tuple.
@@ -196,6 +216,7 @@ fn read_proc_net_file(
     include_ipv6: bool,
     inode_map: &HashMap<u32, (u32, String)>,
     ss_map: &HashMap<ConnTuple, (u32, String)>,
+    uid_name_map: &HashMap<u32, String>,
 ) -> Vec<Connection> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -235,16 +256,25 @@ fn read_proc_net_file(
         } else {
             None
         };
+        let uid: u32 = fields[7].parse().unwrap_or(0);
         let inode: u32 = fields[9].parse().unwrap_or(0);
 
-        // Try inode map first, then fall back to ss-derived connection tuple map
+        // Try inode map first, then fall back to ss-derived connection tuple map.
+        // When both fail, use UID-based process name lookup as last resort
+        // (works for processes owned by other users).
         let (pid, proc_name) = inode_map.get(&inode)
             .map(|&(p, ref n)| (p, n.clone()))
             .or_else(|| {
                 let ss_key = (proto, local_ip, local_port, remote_ip, remote_port);
                 ss_map.get(&ss_key).map(|&(p, ref n)| (p, n.clone()))
             })
-            .unwrap_or((0, "?".to_string()));
+            .unwrap_or_else(|| {
+                // Fallback: show UID-based identifier
+                match uid_name_map.get(&uid) {
+                    Some(name) => (0, format!("{} [UID {}]", name, uid)),
+                    None => (0, format!("[UID {}]", uid)),
+                }
+            });
 
         connections.push(Connection {
             proto,
@@ -255,6 +285,7 @@ fn read_proc_net_file(
             state,
             pid,
             process_name: proc_name,
+            uid,
             dns_hostname: None,
         });
     }
@@ -262,13 +293,13 @@ fn read_proc_net_file(
 }
 
 pub fn fetch_connections(_pid_cache: &mut HashMap<u32, String>) -> Vec<Connection> {
-    let inode_map = build_inode_map();
+    let (inode_map, uid_name_map) = build_inode_maps();
     let ss_map = build_ss_map();
     let mut all = Vec::new();
-    all.extend(read_proc_net_file("/proc/net/tcp", ConnProto::Tcp, false, &inode_map, &ss_map));
-    all.extend(read_proc_net_file("/proc/net/tcp6", ConnProto::Tcp, true, &inode_map, &ss_map));
-    all.extend(read_proc_net_file("/proc/net/udp", ConnProto::Udp, false, &inode_map, &ss_map));
-    all.extend(read_proc_net_file("/proc/net/udp6", ConnProto::Udp, true, &inode_map, &ss_map));
+    all.extend(read_proc_net_file("/proc/net/tcp", ConnProto::Tcp, false, &inode_map, &ss_map, &uid_name_map));
+    all.extend(read_proc_net_file("/proc/net/tcp6", ConnProto::Tcp, true, &inode_map, &ss_map, &uid_name_map));
+    all.extend(read_proc_net_file("/proc/net/udp", ConnProto::Udp, false, &inode_map, &ss_map, &uid_name_map));
+    all.extend(read_proc_net_file("/proc/net/udp6", ConnProto::Udp, true, &inode_map, &ss_map, &uid_name_map));
     all
 }
 
