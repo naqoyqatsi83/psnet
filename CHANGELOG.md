@@ -5,6 +5,12 @@ All notable changes to PSNET are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-06-12
+
+### Fixed
+
+- **PID resolution on Debian 13/RPi** — fall back to `sudo -n ss -tunp` when running without `CAP_NET_ADMIN` and `ss` doesn't show the `users:` process column. Unprivileged users now see real PIDs instead of `-`.
+
 ## [1.1.1] - 2026-06-12
 
 ### Fixed
