@@ -46,7 +46,7 @@ fn parse_tcp_state(state_str: &str) -> Option<TcpState> {
 
 /// Build a map from socket inode -> (pid, process_name).
 ///
-/// Also returns a secondary UID→process_name map for use when inode
+/// Also returns a secondary UID→username map for use when inode
 /// resolution fails (process owned by a different user).
 fn build_inode_maps() -> (HashMap<u32, (u32, String)>, HashMap<u32, String>) {
     let mut inode_map = HashMap::new();
@@ -108,6 +108,22 @@ fn read_uid_for_pid(pid: u32) -> Option<u32> {
     for line in status.lines() {
         if line.starts_with("Uid:") {
             return line.split_whitespace().nth(1)?.parse().ok();
+        }
+    }
+    None
+}
+
+/// Resolve a UID to a human-readable username via /etc/passwd.
+fn uid_to_username(uid: u32) -> Option<String> {
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    for line in passwd.lines() {
+        let parts: Vec<&str> = line.split(':').collect();
+        if parts.len() >= 3 {
+            if let Ok(u) = parts[2].parse::<u32>() {
+                if u == uid {
+                    return Some(parts[0].to_string());
+                }
+            }
         }
     }
     None
@@ -270,9 +286,15 @@ fn read_proc_net_file(
             })
             .unwrap_or_else(|| {
                 // Fallback: show UID-based identifier
-                match uid_name_map.get(&uid) {
-                    Some(name) => (0, format!("{} [UID {}]", name, uid)),
-                    None => (0, format!("[UID {}]", uid)),
+                let uname = uid_to_username(uid)
+                    .unwrap_or_default();
+                if uname.is_empty() {
+                    match uid_name_map.get(&uid) {
+                        Some(name) => (0, format!("{} [UID {}]", name, uid)),
+                        None => (0, format!("[UID {}]", uid)),
+                    }
+                } else {
+                    (0, format!("{} [UID {}]", uname, uid))
                 }
             });
 
