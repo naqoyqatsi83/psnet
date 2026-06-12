@@ -131,21 +131,41 @@ fn uid_to_username(uid: u32) -> Option<String> {
 
 /// Build a process map from `ss -tunp` output, keyed by connection tuple.
 ///
-/// Falls back to `ss` when `/proc/[pid]/fd/` is not readable for other users'
-/// processes. `ss` uses the netlink sock_diag interface which may have different
-/// permission characteristics.
+/// Falls back to `sudo -n ss -tunp` when the normal `ss` invocation doesn't
+/// include the `users:` process info column (happens when running without
+/// `CAP_NET_ADMIN` on some distributions).
 fn build_ss_map() -> HashMap<ConnTuple, (u32, String)> {
-    let mut map = HashMap::new();
-
-    let output = match std::process::Command::new("ss")
+    // Try normal ss first.
+    let mut text = String::new();
+    if let Ok(o) = std::process::Command::new("ss")
         .args(["-tunp"])
         .output()
     {
-        Ok(o) if o.status.success() => o,
-        _ => return map,
-    };
+        if o.status.success() {
+            let t = String::from_utf8_lossy(&o.stdout).to_string();
+            if t.contains("users:") {
+                text = t;
+            }
+        }
+    }
 
-    let text = String::from_utf8_lossy(&output.stdout);
+    // If normal ss didn't show process info, try sudo -n ss -tunp.
+    if text.is_empty() {
+        if let Ok(o) = std::process::Command::new("sudo")
+            .args(["-n", "ss", "-tunp"])
+            .output()
+        {
+            if o.status.success() {
+                let t = String::from_utf8_lossy(&o.stdout).to_string();
+                if t.contains("users:") {
+                    text = t;
+                }
+            }
+        }
+    }
+
+    let mut map = HashMap::new();
+
     for line in text.lines().skip(1) {
         let fields: Vec<&str> = line.split_whitespace().collect();
         if fields.len() < 6 { continue; }
