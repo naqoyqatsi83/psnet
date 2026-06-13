@@ -324,13 +324,13 @@ pub fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
                 .map(|d| {
                     let name = d.custom_name.as_deref().or(d.hostname.as_deref());
                     match name {
-                        Some(n) => format!(" r:rename \"{}\"  s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
-                        None => " r:rename  s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
+                        Some(n) => format!(" r:rename \"{}\"  s:scan  S:aggressive  I:ifaces  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
+                        None => " r:rename  s:scan  S:aggressive  I:ifaces  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
                     }
                 })
-                .unwrap_or_else(|| " s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
+                .unwrap_or_else(|| " r:rename  s:scan  S:aggressive  I:ifaces  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
         } else {
-            " s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
+            " r:rename  s:scan  S:aggressive  I:ifaces  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
         };
         let msg = app.port_scan_msg.as_deref().unwrap_or("");
         let hint_text = if msg.is_empty() {

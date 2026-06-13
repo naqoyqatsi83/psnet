@@ -14,6 +14,8 @@ pub mod firewall;
 pub mod networks;
 pub mod widgets;
 
+use std::net::Ipv4Addr;
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -96,4 +98,84 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Detail popup overlay — drawn last so it appears on top of everything
     detail_popup::draw_detail_popup(f, app);
+
+    // Interface selection popup
+    if let Some(ref state) = app.interface_select_popup {
+        let w = 58u16.min(f.area().width.saturating_sub(4));
+        let h = (state.interfaces.len() as u16 + 7).min(22).max(9);
+        let area = Rect {
+            x: f.area().x + (f.area().width - w) / 2,
+            y: f.area().y + (f.area().height - h) / 2,
+            width: w,
+            height: h,
+        };
+        f.render_widget(Clear, area);
+        draw_interface_select_popup(f, area, state);
+    }
+}
+
+fn mask_to_cidr(ip: Ipv4Addr, mask: Ipv4Addr) -> String {
+    let network = u32::from(ip) & u32::from(mask);
+    let prefix = u32::from(mask).leading_ones();
+    format!("{}/{}", Ipv4Addr::from(network), prefix)
+}
+
+fn draw_interface_select_popup(f: &mut Frame, area: Rect, state: &crate::app::InterfaceSelectState) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(60, 100, 180)))
+        .style(Style::default().bg(Color::Rgb(10, 14, 28)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Title
+    lines.push(Line::from(Span::styled(
+        "  Sweep Interface Selection",
+        Style::default()
+            .fg(Color::Rgb(200, 220, 255))
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        Style::default().fg(Color::Rgb(35, 50, 80)),
+    )));
+
+    // Interface rows
+    for (i, (ip, mask, name)) in state.interfaces.iter().enumerate() {
+        let checked = state.selected.get(i).copied().unwrap_or(false);
+        let is_cursor = i == state.cursor;
+        let cidr = mask_to_cidr(*ip, *mask);
+        let label = format!("  {}  {}  {:12}  {}",
+            if checked { "\u{2611}" } else { "\u{2610}" },
+            format!("{:18}", cidr),
+            name,
+            ip,
+        );
+        let fg = if is_cursor {
+            Color::Rgb(255, 200, 80)
+        } else {
+            Color::Rgb(170, 185, 210)
+        };
+        let prefix = if is_cursor { " \u{25b6} " } else { "    " };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Rgb(255, 200, 80))),
+            Span::styled(label, Style::default().fg(fg).add_modifier(
+                if is_cursor { Modifier::BOLD } else { Modifier::empty() }
+            )),
+        ]));
+    }
+
+    // Footer hint
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [ Space: toggle  Enter: confirm  Esc: cancel ]",
+        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+    )));
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(Color::Rgb(10, 14, 28))),
+        inner,
+    );
 }

@@ -41,12 +41,22 @@ pub struct NetworkScanner {
     pub dhcp_hostnames: Mutex<HashMap<IpAddr, String>>,
     pub aggressive_active: Arc<AtomicBool>,
     pub aggressive_progress: Arc<Mutex<(usize, usize)>>,
+    pub available_interfaces: Vec<(Ipv4Addr, Ipv4Addr, String)>,
+    pub selected_interfaces: Vec<(Ipv4Addr, Ipv4Addr, String)>,
 }
 
 impl NetworkScanner {
     pub fn new() -> Self {
         let (local_ip, subnet_mask, gateway, primary_iface) = get_local_subnet();
         let local_mac = primary_iface.as_ref().and_then(|i| get_interface_mac(i));
+        let all_ifs = get_all_interfaces();
+        let selected_interfaces: Vec<(Ipv4Addr, Ipv4Addr, String)> = match &primary_iface {
+            Some(ref piface) => all_ifs.iter()
+                .filter(|(_, _, name)| name == piface)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
         let labels_path = Self::labels_path();
         let custom_labels = Self::load_labels(&labels_path);
         Self {
@@ -66,6 +76,8 @@ impl NetworkScanner {
             dhcp_hostnames: Mutex::new(HashMap::new()),
             aggressive_active: Arc::new(AtomicBool::new(false)),
             aggressive_progress: Arc::new(Mutex::new((0, 0))),
+            available_interfaces: all_ifs,
+            selected_interfaces,
         }
     }
 
@@ -249,14 +261,14 @@ impl NetworkScanner {
             return;
         }
 
-        let all_ifs = get_all_interfaces();
-        if all_ifs.is_empty() {
+        let sel = &self.selected_interfaces;
+        if sel.is_empty() {
             return;
         }
 
-        // Collect all IPs across all non-loopback interfaces
+        // Collect all IPs across selected interfaces
         let mut all_ips: Vec<Ipv4Addr> = Vec::new();
-        for (local, mask, _) in &all_ifs {
+        for (local, mask, _) in sel {
             let local_u32 = u32::from(*local);
             let mask_u32 = u32::from(*mask);
             let network = local_u32 & mask_u32;

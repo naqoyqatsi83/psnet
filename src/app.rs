@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -145,6 +146,9 @@ pub struct App {
     pub renaming_device: Option<usize>,
     /// Text buffer for device rename.
     pub device_rename_text: String,
+
+    /// Interface selection popup state
+    pub interface_select_popup: Option<InterfaceSelectState>,
 
     // Port scan state
     pub device_port_scans: HashMap<IpAddr, DevicePortScanState>,
@@ -295,6 +299,7 @@ impl App {
             hide_offline_devices: true,
             renaming_device: None,
             device_rename_text: String::new(),
+            interface_select_popup: None,
             device_port_scans: HashMap::new(),
             port_scan_events: Arc::new(Mutex::new(VecDeque::new())),
             port_scan_cancel: Arc::new(AtomicBool::new(false)),
@@ -1139,6 +1144,11 @@ impl App {
         // Notify idle tracker of user input
         self.alert_engine.idle_tracker.on_input();
 
+        // Handle interface select popup first
+        if self.interface_select_popup.is_some() {
+            return self.handle_interface_select_key(code);
+        }
+
         // If detail popup is open, handle navigation for FirewallApp or dismiss
         if self.detail_popup.is_some() {
             if let Some(DetailKind::FirewallApp(ref mut detail)) = self.detail_popup {
@@ -1266,8 +1276,15 @@ impl App {
             KeyCode::BackTab => {
                 self.bottom_tab = self.bottom_tab.prev();
             }
-            KeyCode::Char('i') | KeyCode::Char('I') => {
+            KeyCode::Char('i') => {
                 self.incognito = !self.incognito;
+            }
+            KeyCode::Char('I') => {
+                if self.bottom_tab == BottomTab::Devices {
+                    self.open_interface_select_popup();
+                } else {
+                    self.incognito = !self.incognito;
+                }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.cycle_interface();
@@ -1836,6 +1853,63 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn open_interface_select_popup(&mut self) {
+        let available = &self.network_scanner.available_interfaces;
+        if available.is_empty() {
+            return;
+        }
+        let selected_indices: Vec<bool> = available.iter()
+            .map(|(ip, mask, name)| {
+                self.network_scanner.selected_interfaces.iter()
+                    .any(|(sip, smask, sname)| sip == ip && smask == mask && sname == name)
+            })
+            .collect();
+        self.interface_select_popup = Some(InterfaceSelectState {
+            interfaces: available.clone(),
+            selected: selected_indices,
+            cursor: 0,
+        });
+    }
+
+    fn handle_interface_select_key(&mut self, code: KeyCode) -> bool {
+        let state = match self.interface_select_popup.as_mut() {
+            Some(s) => s,
+            None => return false,
+        };
+        match code {
+            KeyCode::Up => {
+                state.cursor = state.cursor.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let max = state.interfaces.len().saturating_sub(1);
+                state.cursor = state.cursor.min(max).saturating_add(1).min(max);
+            }
+            KeyCode::Char(' ') => {
+                if let Some(b) = state.selected.get_mut(state.cursor) {
+                    *b = !*b;
+                }
+            }
+            KeyCode::Enter => {
+                let selected: Vec<(Ipv4Addr, Ipv4Addr, String)> = state.interfaces.iter()
+                    .enumerate()
+                    .filter(|(i, _)| state.selected.get(*i).copied().unwrap_or(false))
+                    .map(|(_, iface)| iface.clone())
+                    .collect();
+                self.network_scanner.selected_interfaces = selected;
+                self.interface_select_popup = None;
+                self.status_message = Some((
+                    "Interface selection updated".to_string(),
+                    Instant::now(),
+                ));
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.interface_select_popup = None;
+            }
+            _ => {}
+        }
+        false
     }
 
     fn show_incognito_warning(&mut self) {
@@ -2505,4 +2579,11 @@ fn format_open_ports(ports: &[(u16, String)]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// State for the interface selection popup.
+pub struct InterfaceSelectState {
+    pub interfaces: Vec<(Ipv4Addr, Ipv4Addr, String)>,
+    pub selected: Vec<bool>,
+    pub cursor: usize,
 }
