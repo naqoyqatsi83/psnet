@@ -575,8 +575,6 @@ impl App {
             }
 
             // Per-connection bandwidth from packets.
-            let mut matched = 0u64;
-            let mut total_pkts = 0u64;
             // Build a lookup from (proto, src_ip, src_port, dst_ip, dst_port) → ConnKey
             // covering both directions so we never need a global "my_ip".
             let mut pkt_map: HashMap<(ConnProto, IpAddr, u16, IpAddr, u16), ConnKey> = HashMap::new();
@@ -589,10 +587,8 @@ impl App {
                 }
             }
             for pkt in &new_packets {
-                total_pkts += 1;
                 let pkt_key = (pkt.protocol, pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port);
                 if let Some(conn_key) = pkt_map.get(&pkt_key) {
-                    matched += 1;
                     let entry = self.conn_bandwidth.entry(conn_key.clone()).or_insert((0, 0));
                     if pkt.dst_ip == conn_key.local_addr {
                         entry.0 += pkt.payload_size as u64;
@@ -601,17 +597,6 @@ impl App {
                     }
                 }
             }
-            let snif = &self.sniffer;
-            let bw_conns = self.conn_bandwidth.len();
-            self.status_message = Some((
-                format!("pkt:{} mch:{} pcap_all:{} ipv4:{} bw_conns:{} snif_err:{:?}", total_pkts, matched,
-                    snif.dbg_pcap_all.load(std::sync::atomic::Ordering::Relaxed),
-                    snif.dbg_pcap_ipv4.load(std::sync::atomic::Ordering::Relaxed),
-                    bw_conns,
-                    snif.get_error()),
-                std::time::Instant::now(),
-            ));
-
             // Per-device bandwidth: correlate packets with LAN device IPs
             // Build IP→index HashMap for O(1) lookups
             let mut device_ip_index: HashMap<IpAddr, usize> = self.network_scanner.devices

@@ -26,9 +26,6 @@ pub struct PacketSniffer {
     handle: Option<thread::JoinHandle<()>>,
     total_added: Arc<AtomicUsize>,
     consumed_count: usize,
-    // Debug counters: raw pcap packets seen, parse failures, filtered
-    pub dbg_pcap_all: Arc<AtomicUsize>,
-    pub dbg_pcap_ipv4: Arc<AtomicUsize>,
 }
 
 impl PacketSniffer {
@@ -42,8 +39,6 @@ impl PacketSniffer {
             handle: None,
             total_added: Arc::new(AtomicUsize::new(0)),
             consumed_count: 0,
-            dbg_pcap_all: Arc::new(AtomicUsize::new(0)),
-            dbg_pcap_ipv4: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -60,8 +55,6 @@ impl PacketSniffer {
         let error_msg = Arc::clone(&self.error_msg);
         let max = self.max_snippets;
         let total_added = Arc::clone(&self.total_added);
-        let dbg_all = Arc::clone(&self.dbg_pcap_all);
-        let dbg_ipv4 = Arc::clone(&self.dbg_pcap_ipv4);
         let iface = iface_name.to_string();
 
         // Clear any previous error
@@ -72,7 +65,7 @@ impl PacketSniffer {
         self.active.store(true, Ordering::Relaxed);
 
         self.handle = Some(thread::spawn(move || {
-            sniffer_thread(snippets, active, error_msg, max, total_added, dbg_all, dbg_ipv4, &iface);
+            sniffer_thread(snippets, active, error_msg, max, total_added, &iface);
         }));
     }
 
@@ -137,8 +130,6 @@ fn sniffer_thread(
     error_msg: Arc<Mutex<Option<String>>>,
     max_snippets: usize,
     total_added: Arc<AtomicUsize>,
-    dbg_all: Arc<AtomicUsize>,
-    dbg_ipv4: Arc<AtomicUsize>,
     iface_name: &str,
 ) {
     // Find the capture device. If an interface name was given (from the app's
@@ -246,9 +237,7 @@ fn sniffer_thread(
     while active.load(Ordering::Relaxed) {
         match cap.next_packet() {
             Ok(pkt) => {
-                dbg_all.fetch_add(1, Ordering::Relaxed);
                 if let Some(snippet) = parse_packet(&pkt, local_ip_v4) {
-                    dbg_ipv4.fetch_add(1, Ordering::Relaxed);
                     if let Ok(mut lock) = snippets.lock() {
                         lock.push_back(snippet);
                         total_added.fetch_add(1, Ordering::Relaxed);

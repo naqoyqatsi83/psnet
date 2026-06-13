@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-connection bandwidth tracking** — Recv/Sent columns in Connections view show accumulated bytes per connection (requires root for pcap capture on physical interface)
+- **Multi-host parallel port scan** — `a`/`A` scans up to 5 devices simultaneously instead of one at a time; common scan of 15 devices in ~450ms instead of 2.3s
 - **TCP port scanning** — `p` scans ~33 common ports, `P` scans all 65535 ports on the selected device. Background thread, concurrent probes, no root required
-- **Scan all devices** — `a` scans common ports on every online device sequentially, `A` does a full 1-65535 scan on every device
+- **Aggressive ping sweep** — `S` actively pings every IP in the local subnet (batches of 20 concurrent `ping -c 1` probes) to discover devices not in the ARP cache
 - **Aggressive ping sweep** — `S` actively pings every IP in the local subnet (batches of 20 concurrent `ping -c 1` probes) to discover devices not in the ARP cache
 - **Incognito mode defaults ON** — starts in passive/non-intrusive mode. Active scans (`p`/`P`/`a`/`A`/`S`) show a warning toast: "Incognito — press 'i' to allow active scans"
 - **Number-key column sorting** — Devices view: `1`-`9` sort by IP, Name, MAC, Vendor, Ports, First/Last Seen, Recv, Send. Networks view: `1`-`6` sort by Network, Type, Gateway, Netmask, Devices, Interface
@@ -25,10 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Incognito mode is now the default — toggle with `i`
+- Snaplen raised to 512 for better raw payload capture
+- BPF filter error logged to status message if it fails
 
 ### Fixed
 
-- **PID resolution on Debian 13/RPi** — fall back to `sudo -n ss -tunp` when running without `CAP_NET_ADMIN` and `ss` doesn't show the `users:` process column. Unprivileged users now see real PIDs instead of `-`.
+- **Bandwidth payload truncated by snaplen** — `payload_size` was always ≤ 200 bytes (pcap truncation at 256). Now computed from `ip_total_len − header_len` so full TCP segment sizes are counted correctly
+- **TLS/SSH encrypted data dropped from bandwidth** — empty-payload filter checked truncated `payload.is_empty()` which never fired for data segments. Now checks the real `payload_size` from the IP header
+- **Physical interface capture** — sniffer captures on physical interface instead of "any" pseudo-interface which drops ~94% of packets through the pcap mmap ring
+- **PID resolution on Debian 13/RPi** — fall back to `sudo -n ss -tunp` when running without `CAP_NET_ADMIN`
 
 ## [1.1.1] - 2026-06-12
 
