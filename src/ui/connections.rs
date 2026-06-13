@@ -26,7 +26,7 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
         .fg(Color::Rgb(160, 180, 220))
         .add_modifier(Modifier::BOLD);
 
-    // ── Columns: PID | Process | Remote Host | Geo | Service | State | Local ──
+    // ── Columns: PID | Process | Remote Host | Geo | Service | State | Local | Recv | Sent ──
     let header = Row::new(vec![
         Cell::from(Span::styled(format!("PID{}", sort_ind(7)), hdr_style)),
         Cell::from(Span::styled(format!("Process{}", sort_ind(6)), hdr_style)),
@@ -35,6 +35,8 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
         Cell::from(Span::styled(format!("Service{}", sort_ind(4)), hdr_style)),
         Cell::from(Span::styled(format!("State{}", sort_ind(5)), hdr_style)),
         Cell::from(Span::styled(format!("Local{}", sort_ind(2)), hdr_style)),
+        Cell::from(Span::styled(format!("Recv{}", sort_ind(9)), hdr_style)),
+        Cell::from(Span::styled(format!("Sent{}", sort_ind(10)), hdr_style)),
     ])
     .height(1)
     .style(Style::default().bg(Color::Rgb(18, 25, 42)));
@@ -178,6 +180,18 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
                 "-".to_string()
             };
 
+            let recv_str = if conn.bytes_received > 0 {
+                crate::utils::format_bytes_short(conn.bytes_received)
+            } else {
+                String::new()
+            };
+            let sent_str = if conn.bytes_sent > 0 {
+                crate::utils::format_bytes_short(conn.bytes_sent)
+            } else {
+                String::new()
+            };
+            let bw_color = if dim { Color::Rgb(50, 55, 70) } else { Color::Rgb(80, 180, 255) };
+
             Row::new(vec![
                 Cell::from(Span::styled(
                     pid_str,
@@ -216,6 +230,14 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
                     local_str,
                     Style::default().fg(Color::Rgb(75, 85, 108)),
                 )),
+                Cell::from(Span::styled(
+                    recv_str,
+                    Style::default().fg(bw_color),
+                )),
+                Cell::from(Span::styled(
+                    sent_str,
+                    Style::default().fg(if dim { Color::Rgb(50, 55, 70) } else { Color::Rgb(255, 180, 100) }),
+                )),
             ])
             .style(Style::default().bg(row_bg))
         })
@@ -246,6 +268,18 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
             localhost_info.to_string(),
             Style::default().fg(Color::Rgb(80, 160, 200)),
         ),
+        // Bandwidth data requires root (pcap) — show note when unprivileged
+        if !app.is_root {
+            Span::styled(
+                " traffic:root-only ",
+                Style::default().fg(Color::Rgb(200, 150, 80)),
+            )
+        } else {
+            Span::styled(
+                " traffic:live ",
+                Style::default().fg(Color::Rgb(80, 180, 120)),
+            )
+        },
     ];
     if !filter_info.is_empty() {
         title_spans.push(Span::styled(
@@ -264,6 +298,13 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
         let remote_str = conn.dns_hostname.clone()
             .or_else(|| conn.remote_addr.map(|ip| ip.to_string()))
             .unwrap_or_else(|| "*".to_string());
+        let bw_str = if conn.bytes_received > 0 || conn.bytes_sent > 0 {
+            format!(" \u{2193}{} \u{2191}{}",
+                crate::utils::format_bytes_short(conn.bytes_received),
+                crate::utils::format_bytes_short(conn.bytes_sent))
+        } else {
+            String::new()
+        };
         Line::from(vec![
             Span::styled(" \u{25B8} ", Style::default().fg(Color::Rgb(100, 200, 255)).add_modifier(Modifier::BOLD)),
             Span::styled(
@@ -274,6 +315,7 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(remote_str, Style::default().fg(Color::Rgb(100, 220, 255))),
             Span::styled(" \u{2502} ", Style::default().fg(Color::Rgb(40, 55, 80))),
             Span::styled(geo_detail, Style::default().fg(Color::Rgb(170, 200, 230))),
+            Span::styled(bw_str, Style::default().fg(Color::Rgb(80, 180, 255))),
         ])
     } else {
         Line::from("")
@@ -289,6 +331,8 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(12),  // Service
             Constraint::Length(12),  // State
             Constraint::Length(7),   // Local port
+            Constraint::Length(8),   // Recv
+            Constraint::Length(8),   // Sent
         ],
     )
     .header(header)

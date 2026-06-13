@@ -28,3 +28,16 @@ pub fn format_bytes(bytes: u64) -> String {
 pub fn ntohs(port: u32) -> u16 {
     ((port & 0xFF) << 8 | (port >> 8) & 0xFF) as u16
 }
+
+/// Compact byte formatting for narrow table columns (e.g., "1.2K", "3.4M").
+pub fn format_bytes_short(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{}B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}K", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1}M", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1}G", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}

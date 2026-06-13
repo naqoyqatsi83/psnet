@@ -109,6 +109,10 @@ pub struct Connection {
     pub process_name: String,
     /// DNS-resolved hostname for remote address (if available).
     pub dns_hostname: Option<String>,
+    /// Bytes received from this connection (via packet capture).
+    pub bytes_received: u64,
+    /// Bytes sent to this connection (via packet capture).
+    pub bytes_sent: u64,
 }
 
 /// Unique key for identifying a connection across ticks.

@@ -151,6 +151,7 @@ pub struct App {
     pub interface_select_popup: Option<InterfaceSelectState>,
 
     // Port scan state
+    pub conn_bandwidth: HashMap<ConnKey, (u64, u64)>,
     pub device_port_scans: HashMap<IpAddr, DevicePortScanState>,
     pub port_scan_events: Arc<Mutex<VecDeque<(IpAddr, PortScanEvent)>>>,
     pub port_scan_cancel: Arc<AtomicBool>,
@@ -178,6 +179,9 @@ pub struct App {
 
     /// When true, all keystrokes go to the current tab's filter field.
     pub filter_active: bool,
+
+    /// Whether the process has root privileges (required for pcap-based per-connection bandwidth).
+    pub is_root: bool,
 
     // Internal
     pid_cache: PidCache,
@@ -300,6 +304,7 @@ impl App {
             renaming_device: None,
             device_rename_text: String::new(),
             interface_select_popup: None,
+            conn_bandwidth: HashMap::new(),
             device_port_scans: HashMap::new(),
             port_scan_events: Arc::new(Mutex::new(VecDeque::new())),
             port_scan_cancel: Arc::new(AtomicBool::new(false)),
@@ -324,11 +329,24 @@ impl App {
 
             filter_active: false,
 
+            is_root: false, // set below
         };
 
         // Issue a startup warning when the firewall is disabled due to
         // insufficient privileges — users should not get a false sense of
         // control.
+        // Detect root — needed for pcap-based per-connection bandwidth tracking.
+        app.is_root = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("Uid:"))
+                    .and_then(|l| l.split_whitespace().nth(2))
+                    .and_then(|v| v.parse::<u32>().ok())
+            })
+            .map(|euid| euid == 0)
+            .unwrap_or(false);
+
         if !app.firewall_manager.enabled
             && app.firewall_manager.backend_name == "no write access"
             && !crate::network::nftables::can_manage_firewall()
@@ -538,6 +556,27 @@ impl App {
                 }
             }
 
+            // Per-connection bandwidth from packets
+            for pkt in &new_packets {
+                let (local_ip, local_port, remote_ip, remote_port) = match pkt.direction {
+                    PacketDirection::Outbound => (pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port),
+                    PacketDirection::Inbound => (pkt.dst_ip, pkt.dst_port, pkt.src_ip, pkt.src_port),
+                };
+                let key = ConnKey {
+                    proto: pkt.protocol,
+                    local_addr: local_ip,
+                    local_port,
+                    remote_addr: Some(remote_ip),
+                    remote_port: Some(remote_port),
+                };
+                let entry = self.conn_bandwidth.entry(key).or_insert((0, 0));
+                if pkt.direction == PacketDirection::Inbound {
+                    entry.0 += pkt.payload_size as u64;
+                } else {
+                    entry.1 += pkt.payload_size as u64;
+                }
+            }
+
             // Per-device bandwidth: correlate packets with LAN device IPs
             // Build IP→index HashMap for O(1) lookups
             let mut device_ip_index: HashMap<IpAddr, usize> = self.network_scanner.devices
@@ -611,6 +650,20 @@ impl App {
                     }
                 }
             }
+        }
+
+        // Overlay per-connection bandwidth from packet capture
+        for conn in &mut self.connections {
+            let key = conn.key();
+            if let Some(&(rx, tx)) = self.conn_bandwidth.get(&key) {
+                conn.bytes_received = rx;
+                conn.bytes_sent = tx;
+            }
+        }
+
+        // Re-sort if sorted by bandwidth columns — sort was on zeroed values before overlay
+        if self.sort_column == 9 || self.sort_column == 10 {
+            self.sort_connections();
         }
 
         // Fallback: when no pcap data, estimate device traffic from connections
@@ -949,7 +1002,6 @@ impl App {
                 7 => a.pid.cmp(&b.pid),
                 // Geo (country code — sort connections without remote first)
                 8 => {
-                    // Reuse the closure's access to self through the outer scope
                     let geo_a = a.remote_addr
                         .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
                         .and_then(|ip| self.geoip.lookup(ip))
@@ -962,6 +1014,8 @@ impl App {
                         .unwrap_or_default();
                     geo_a.cmp(&geo_b)
                 }
+                9 => a.bytes_received.cmp(&b.bytes_received),
+                10 => a.bytes_sent.cmp(&b.bytes_sent),
                 _ => std::cmp::Ordering::Equal,
             };
             if asc { ord } else { ord.reverse() }
@@ -1504,8 +1558,7 @@ impl App {
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 self.hide_localhost_conn = !self.hide_localhost_conn;
             }
-            // Sort by display column number:
-            // 1=PID, 2=Process, 3=Remote, 4=Geo, 5=Service, 6=State, 7=Local
+            // 1=PID, 2=Process, 3=Remote, 4=Geo, 5=Service, 6=State, 7=Local, 8=Recv, 9=Sent
             KeyCode::Char('1') => self.toggle_sort(7),  // PID
             KeyCode::Char('2') => self.toggle_sort(6),  // Process
             KeyCode::Char('3') => self.toggle_sort(3),  // Remote
@@ -1513,6 +1566,8 @@ impl App {
             KeyCode::Char('5') => self.toggle_sort(4),  // Service
             KeyCode::Char('6') => self.toggle_sort(5),  // State
             KeyCode::Char('7') => self.toggle_sort(2),  // Local
+            KeyCode::Char('8') => self.toggle_sort(9),  // Recv
+            KeyCode::Char('9') => self.toggle_sort(10), // Sent
             // Block selected connection's process via firewall
             KeyCode::Char('b') | KeyCode::Char('B') => {
                 if !self.firewall_manager.enabled {
@@ -2436,10 +2491,10 @@ impl App {
     fn handle_header_click(&mut self, x: u16, frame_w: u16) {
         match self.bottom_tab {
             BottomTab::Connections => {
-                // Display columns: PID(6), Process(16), Remote(flex), Geo(7), Service(12), State(12), Local(7)
-                let col = column_from_x(x, &[6, 16, 0, 7, 12, 12, 7], frame_w);
+                // Display columns: PID(6), Process(16), Remote(flex), Geo(7), Service(12), State(12), Local(7), Recv(8), Sent(8)
+                let col = column_from_x(x, &[6, 16, 0, 7, 12, 12, 7, 8, 8], frame_w);
                 // Map display column index to sort_column: 0→PID(7), 1→Process(6), 2→Remote(3),
-                // 3→Geo(8), 4→Service(4), 5→State(5), 6→Local(2)
+                // 3→Geo(8), 4→Service(4), 5→State(5), 6→Local(2), 7→Recv(9), 8→Sent(10)
                 if let Some(sort_col) = match col {
                     Some(0) => Some(7),
                     Some(1) => Some(6),
@@ -2448,6 +2503,8 @@ impl App {
                     Some(4) => Some(4),
                     Some(5) => Some(5),
                     Some(6) => Some(2),
+                    Some(7) => Some(9),
+                    Some(8) => Some(10),
                     _ => None,
                 } {
                     self.toggle_sort(sort_col);

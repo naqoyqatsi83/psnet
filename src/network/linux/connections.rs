@@ -276,6 +276,8 @@ fn read_proc_net_file(
             pid,
             process_name: proc_name,
             dns_hostname: None,
+            bytes_received: 0,
+            bytes_sent: 0,
         });
     }
     connections
