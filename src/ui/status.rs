@@ -114,7 +114,8 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             key_span("Esc", "Clear"),
         ],
         BottomTab::Devices => vec![
-            key_span("s", "ARP Scan"),
+            key_span("s", "ARP"),
+            key_span("S", "PingSweep"),
             key_span("p", "Ports"),
             key_span("P", "Full"),
             key_span("a", "All"),

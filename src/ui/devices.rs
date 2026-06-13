@@ -295,6 +295,14 @@ pub fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Rgb(80, 200, 255)).add_modifier(Modifier::BOLD),
         ));
     }
+    if scanner.is_aggressive_scanning() {
+        let (done, total) = scanner.aggressive_progress_info();
+        let pct = if total > 0 { done * 100 / total } else { 0 };
+        title_spans.push(Span::styled(
+            format!(" ⚡Ping sweep {}/{} ({}%) ", done, total, pct),
+            Style::default().fg(Color::Rgb(255, 200, 80)).add_modifier(Modifier::BOLD),
+        ));
+    }
     if !local_ip_str.is_empty() {
         title_spans.push(Span::styled(
             local_ip_str,
@@ -316,13 +324,13 @@ pub fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
                 .map(|d| {
                     let name = d.custom_name.as_deref().or(d.hostname.as_deref());
                     match name {
-                        Some(n) => format!(" r:rename \"{}\"  s:scan  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
-                        None => " r:rename  s:scan  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
+                        Some(n) => format!(" r:rename \"{}\"  s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
+                        None => " r:rename  s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
                     }
                 })
-                .unwrap_or_else(|| " s:scan  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
+                .unwrap_or_else(|| " s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
         } else {
-            " s:scan  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
+            " s:scan  S:aggressive  p:ports  P:full  a:all  A:ALLfull  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
         };
         let msg = app.port_scan_msg.as_deref().unwrap_or("");
         let hint_text = if msg.is_empty() {

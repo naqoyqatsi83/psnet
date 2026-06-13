@@ -151,6 +151,7 @@ pub struct App {
     pub port_scan_events: Arc<Mutex<VecDeque<(IpAddr, PortScanEvent)>>>,
     pub port_scan_cancel: Arc<AtomicBool>,
     pub port_scan_msg: Option<String>,
+    aggressive_was_active: bool,
 
     // World map: recently-closed connections shown as fading dots.
     // (remote_addr, country_code, tick_when_closed)
@@ -298,6 +299,7 @@ impl App {
             port_scan_events: Arc::new(Mutex::new(VecDeque::new())),
             port_scan_cancel: Arc::new(AtomicBool::new(false)),
             port_scan_msg: None,
+            aggressive_was_active: false,
 
             map_fading_dots: Vec::new(),
             map_prev_remote_ips: HashSet::new(),
@@ -358,6 +360,13 @@ impl App {
         }
 
         self.poll_port_scan_results();
+
+        // Status message when aggressive ping sweep completes
+        let aggr_active = self.network_scanner.is_aggressive_scanning();
+        if self.aggressive_was_active && !aggr_active {
+            self.port_scan_msg = Some("Aggressive ping sweep complete — new devices may have been discovered".into());
+        }
+        self.aggressive_was_active = aggr_active;
 
         changed
     }
@@ -1754,8 +1763,16 @@ impl App {
             return;
         }
         match code {
-            KeyCode::Char('s') | KeyCode::Char('S') => {
+            KeyCode::Char('s') => {
                 self.network_scanner.start_scan();
+            }
+            KeyCode::Char('S') => {
+                if self.incognito {
+                    self.show_incognito_warning();
+                } else {
+                    self.network_scanner.aggressive_start_scan();
+                    self.port_scan_msg = Some("Aggressive ping sweep started...".into());
+                }
             }
             KeyCode::Char('o') | KeyCode::Char('O') => {
                 self.hide_offline_devices = !self.hide_offline_devices;

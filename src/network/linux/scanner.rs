@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::types::LanDevice;
 use super::oui::lookup as mac_vendor_lookup;
@@ -13,6 +14,7 @@ use super::oui::lookup as mac_vendor_lookup;
 // Scan phase constants
 pub const SCAN_PHASE_ARP: u8 = 0;
 pub const SCAN_PHASE_DNS: u8 = 1;
+pub const SCAN_PHASE_PING: u8 = 2;
 
 struct DeviceUpdate {
     ip: Ipv4Addr,
@@ -36,6 +38,8 @@ pub struct NetworkScanner {
     pub custom_labels: HashMap<String, String>,
     labels_path: PathBuf,
     pub dhcp_hostnames: Mutex<HashMap<IpAddr, String>>,
+    pub aggressive_active: Arc<AtomicBool>,
+    pub aggressive_progress: Arc<Mutex<(usize, usize)>>,
 }
 
 impl NetworkScanner {
@@ -57,10 +61,15 @@ impl NetworkScanner {
             custom_labels,
             labels_path,
             dhcp_hostnames: Mutex::new(HashMap::new()),
+            aggressive_active: Arc::new(AtomicBool::new(false)),
+            aggressive_progress: Arc::new(Mutex::new((0, 0))),
         }
     }
 
     pub fn start_scan(&self) {
+        if self.is_aggressive_scanning() {
+            return;
+        }
         self.scanning.store(1, Ordering::Relaxed);
         let mut pending = self.pending.lock().unwrap();
         pending.clear();
@@ -177,12 +186,121 @@ impl NetworkScanner {
     }
     pub fn tick(&mut self) {
         self.scan_tick += 1;
-        if self.scan_tick % 15 == 1 {
+        if self.scan_tick % 15 == 1 && !self.is_aggressive_scanning() {
             self.start_scan();
         }
     }
+    /// Start an aggressive ping sweep of the entire subnet.
+    /// Discovers devices that aren't in the ARP cache yet.
+    pub fn aggressive_start_scan(&self) {
+        if self.aggressive_active.load(Ordering::Relaxed) {
+            return;
+        }
+        let (Some(local), Some(mask)) = (self.local_ip, self.subnet_mask) else {
+            return;
+        };
+        let local_u32 = u32::from(local);
+        let mask_u32 = u32::from(mask);
+        let network = local_u32 & mask_u32;
+        let wildcard = !mask_u32;
+        let broadcast = network | wildcard;
+
+        let first = network + 1;
+        let last = broadcast.saturating_sub(1);
+        // Limit to 1024 hosts max (don't scan /22 or larger)
+        if last.saturating_sub(first) > 1024 {
+            return;
+        }
+
+        self.aggressive_active.store(true, Ordering::Relaxed);
+        if let Ok(mut p) = self.aggressive_progress.lock() {
+            *p = (0, (last - first + 1) as usize);
+        }
+
+        let pending = self.pending.clone();
+        let active = self.aggressive_active.clone();
+        let progress = self.aggressive_progress.clone();
+
+        std::thread::spawn(move || {
+            let ips: Vec<Ipv4Addr> = (first..=last).map(|n| Ipv4Addr::from(n)).collect();
+            let total = ips.len();
+            let mut responded: Vec<Ipv4Addr> = Vec::new();
+
+            // Ping in batches of 20 concurrently
+            for (i, chunk) in ips.chunks(20).enumerate() {
+                if !active.load(Ordering::Relaxed) {
+                    return;
+                }
+                let mut handles = Vec::new();
+                for ip in chunk {
+                    let ip_str = ip.to_string();
+                    handles.push(std::thread::spawn(move || {
+                        Command::new("ping")
+                            .args(["-c", "1", "-W", "1", "-q", &ip_str])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false)
+                    }));
+                }
+                for (j, h) in handles.into_iter().enumerate() {
+                    if h.join().unwrap_or(false) {
+                        responded.push(ips[i * 20 + j]);
+                    }
+                }
+                if let Ok(mut p) = progress.lock() {
+                    p.0 = ((i + 1) * 20).min(total);
+                }
+            }
+
+            // Brief pause for ARP cache to populate
+            std::thread::sleep(Duration::from_millis(100));
+
+            // Read ARP cache to get MACs for responding IPs
+            let arp_macs: HashMap<Ipv4Addr, String> = fs::read_to_string("/proc/net/arp")
+                .ok()
+                .map(|content| {
+                    content.lines().skip(1).filter_map(|line| {
+                        let fields: Vec<&str> = line.split_whitespace().collect();
+                        if fields.len() < 6 { return None; }
+                        let ip = fields[0].parse::<Ipv4Addr>().ok()?;
+                        let mac = fields[3].to_string();
+                        if mac == "00:00:00:00:00:00" { return None; }
+                        Some((ip, mac))
+                    }).collect()
+                })
+                .unwrap_or_default();
+
+            let mut updates: Vec<DeviceUpdate> = responded.iter().map(|ip| {
+                let mac = arp_macs.get(ip).cloned().unwrap_or_default();
+            let has_mac = !mac.is_empty();
+            DeviceUpdate {
+                ip: *ip,
+                mac,
+                hostname: None,
+                discovery_info: if has_mac { "Ping".to_string() } else { "Ping (no MAC)".to_string() },
+                open_ports: String::new(),
+            }
+            }).collect();
+            // Deduplicate by IP before pushing
+            updates.sort_by_key(|u| u.ip);
+            updates.dedup_by_key(|u| u.ip);
+            if let Ok(mut q) = pending.lock() {
+                q.extend(updates);
+            }
+            active.store(false, Ordering::Relaxed);
+        });
+    }
+
     pub fn is_scanning(&self) -> bool {
         self.scanning.load(Ordering::Relaxed) != 0
+    }
+    pub fn is_aggressive_scanning(&self) -> bool {
+        self.aggressive_active.load(Ordering::Relaxed)
+    }
+    pub fn aggressive_progress_info(&self) -> (usize, usize) {
+        self.aggressive_progress.lock().map(|p| *p).unwrap_or((0, 0))
     }
     pub fn scan_progress(&self) -> (usize, usize) { (0, 0) }
     pub fn scan_phase(&self) -> u8 { 0 }
