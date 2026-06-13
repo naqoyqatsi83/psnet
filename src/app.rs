@@ -375,6 +375,9 @@ impl App {
                 PortScanEvent::Progress { scanned, total } => {
                     self.device_port_scans.insert(ip, DevicePortScanState::InProgress { scanned, total });
                 }
+                PortScanEvent::MultiProgress { current, total } => {
+                    self.port_scan_msg = Some(format!("Scanning device {}/{}...", current, total));
+                }
                 PortScanEvent::Complete(result) => {
                     self.device_port_scans.insert(ip, DevicePortScanState::Done);
                     // Update the device's open_ports string
@@ -1793,18 +1796,35 @@ impl App {
             KeyCode::Char('8') => self.toggle_device_sort(8),
             KeyCode::Char('9') => self.toggle_device_sort(9),
             // Port scanning: p = quick common ports, P = full 1-65535
+            // a = quick all devices, A = full all devices
             KeyCode::Char('p') => {
                 if !self.try_start_scan_selected_device(false) {
-                    self.port_scan_msg = Some("Incognito — press 'i' to allow active scans".into());
+                    self.show_incognito_warning();
                 }
             }
             KeyCode::Char('P') => {
                 if !self.try_start_scan_selected_device(true) {
-                    self.port_scan_msg = Some("Incognito — press 'i' to allow active scans".into());
+                    self.show_incognito_warning();
+                }
+            }
+            KeyCode::Char('a') => {
+                if !self.try_start_scan_all_devices(false) {
+                    self.show_incognito_warning();
+                }
+            }
+            KeyCode::Char('A') => {
+                if !self.try_start_scan_all_devices(true) {
+                    self.show_incognito_warning();
                 }
             }
             _ => {}
         }
+    }
+
+    fn show_incognito_warning(&mut self) {
+        let msg = "Incognito — press 'i' to allow active scans".to_string();
+        self.port_scan_msg = Some(msg.clone());
+        self.status_message = Some((msg, Instant::now()));
     }
 
     /// Start a port scan on the currently selected device.
@@ -1825,6 +1845,35 @@ impl App {
             let scan_type = if full { "Full" } else { "Quick" };
             self.port_scan_msg = Some(format!("{} port scan started on {}", scan_type, ip));
         }
+        true
+    }
+
+    /// Start port scans on all online devices sequentially.
+    /// Returns false if blocked by incognito mode.
+    fn try_start_scan_all_devices(&mut self, full: bool) -> bool {
+        if self.incognito {
+            return false;
+        }
+        let ips: Vec<IpAddr> = self.network_scanner.devices.iter()
+            .filter(|d| !self.hide_offline_devices || d.is_online)
+            .map(|d| d.ip)
+            .collect();
+        if ips.is_empty() {
+            return true;
+        }
+        // Cancel any previous single scan
+        self.port_scan_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.port_scan_cancel = cancel.clone();
+        self.port_scan_msg = None;
+        let scan_type = if full { "Full" } else { "Quick" };
+        self.port_scan_msg = Some(format!("{} scanning {} devices...", scan_type, ips.len()));
+        // Set all devices to InProgress
+        for ip in &ips {
+            self.device_port_scans.insert(*ip, DevicePortScanState::InProgress { scanned: 0, total: if full { 65535 } else { 33 } });
+        }
+        let events = self.port_scan_events.clone();
+        crate::network::port_scanner::start_multi_scan(ips, full, events, cancel);
         true
     }
 

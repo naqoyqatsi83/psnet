@@ -70,7 +70,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
         // Use orange styling for permission/firewall warnings.
         let is_warning = msg.contains("root") || msg.contains("permission")
-            || msg.contains("sudo") || msg.contains("privileg");
+            || msg.contains("sudo") || msg.contains("privileg")
+            || msg.contains("Incognito");
         let (fg, border) = if is_warning {
             (Color::Rgb(255, 200, 100), Color::Rgb(200, 140, 40))
         } else {

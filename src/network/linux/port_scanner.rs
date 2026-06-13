@@ -16,6 +16,7 @@ pub struct PortScanResult {
 #[derive(Clone, Debug)]
 pub enum PortScanEvent {
     Progress { scanned: usize, total: usize },
+    MultiProgress { current: usize, total: usize },
     Complete(PortScanResult),
 }
 
@@ -34,6 +35,34 @@ pub const COMMON_PORTS: &[(u16, &str)] = &[
     (8443, "HTTPS-Alt"), (9090, "Prometheus"), (9100, "NodeExporter"),
     (9200, "Elasticsearch"), (11211, "Memcached"), (27017, "MongoDB"),
 ];
+
+/// Scan a list of IPs sequentially (one at a time).
+/// Emits MultiProgress for overall status and individual Complete per IP.
+pub fn start_multi_scan(
+    ips: Vec<IpAddr>,
+    full: bool,
+    events: Arc<Mutex<VecDeque<(IpAddr, PortScanEvent)>>>,
+    cancel: Arc<AtomicBool>,
+) {
+    let ports: Vec<u16> = if full {
+        (1..=65535).collect()
+    } else {
+        COMMON_PORTS.iter().map(|(p, _)| *p).collect()
+    };
+    let total = ips.len();
+    std::thread::spawn(move || {
+        for (i, ip) in ips.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            // Emit overall progress
+            if let Ok(mut q) = events.lock() {
+                q.push_back((*ip, PortScanEvent::MultiProgress { current: i + 1, total }));
+            }
+            do_scan(*ip, &ports, events.clone(), cancel.clone());
+        }
+    });
+}
 
 /// Start a quick scan of common ports on the given IP.
 pub fn start_common_scan(
