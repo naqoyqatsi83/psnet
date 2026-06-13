@@ -658,15 +658,15 @@ impl App {
         }
 
         // Overlay per-connection bandwidth from packet capture.
-        // Try both src→dst and dst→src key orderings since the sniffer may
-        // key packets in the opposite direction from /proc/net connections.
+        // Since we key by src→dst order, outbound data lives in the
+        // forward key (entry.1 = sent) and inbound data lives in the
+        // reverse key (entry.0 = received). Try both independently.
         for conn in &mut self.connections {
             let key = conn.key();
-            if let Some(&(rx, tx)) = self.conn_bandwidth.get(&key) {
-                conn.bytes_received = rx;
-                conn.bytes_sent = tx;
-            } else if let (Some(raddr), Some(rport)) = (conn.remote_addr, conn.remote_port) {
-                // Try reversed key: stored as src→dst, connection is dst→src
+            if let Some(&(_, tx)) = self.conn_bandwidth.get(&key) {
+                conn.bytes_sent = tx; // forward key: entry.1 = data FROM the src (us)
+            }
+            if let (Some(raddr), Some(rport)) = (conn.remote_addr, conn.remote_port) {
                 let rev_key = ConnKey {
                     proto: conn.proto,
                     local_addr: raddr,
@@ -674,10 +674,8 @@ impl App {
                     remote_addr: Some(conn.local_addr),
                     remote_port: Some(conn.local_port),
                 };
-                if let Some(&(rx, tx)) = self.conn_bandwidth.get(&rev_key) {
-                    // Stored with src→dst keying, rx=data to local=our bytes_received
-                    conn.bytes_received = rx;
-                    conn.bytes_sent = tx;
+                if let Some(&(rx, _)) = self.conn_bandwidth.get(&rev_key) {
+                    conn.bytes_received = rx; // reverse key: entry.0 = data TO the dst (us)
                 }
             }
         }
