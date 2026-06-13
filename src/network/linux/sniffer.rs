@@ -26,6 +26,9 @@ pub struct PacketSniffer {
     handle: Option<thread::JoinHandle<()>>,
     total_added: Arc<AtomicUsize>,
     consumed_count: usize,
+    // Debug counters: raw pcap packets seen, parse failures, filtered
+    pub dbg_pcap_all: Arc<AtomicUsize>,
+    pub dbg_pcap_ipv4: Arc<AtomicUsize>,
 }
 
 impl PacketSniffer {
@@ -39,13 +42,15 @@ impl PacketSniffer {
             handle: None,
             total_added: Arc::new(AtomicUsize::new(0)),
             consumed_count: 0,
+            dbg_pcap_all: Arc::new(AtomicUsize::new(0)),
+            dbg_pcap_ipv4: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    /// Start the sniffer on a background thread listening on all interfaces.
-    /// If pcap fails to open a device (e.g., due to lack of permissions),
-    /// sets an error message and returns without starting capture.
-    pub fn start(&mut self) {
+    /// Start the sniffer on a background thread, capturing on the given
+    /// interface name (e.g. "eth0", "wlan0", or "any"). If `iface_name` is
+    /// empty, auto-selects a suitable interface.
+    pub fn start(&mut self, iface_name: &str) {
         if self.active.load(Ordering::Relaxed) {
             return;
         }
@@ -55,6 +60,9 @@ impl PacketSniffer {
         let error_msg = Arc::clone(&self.error_msg);
         let max = self.max_snippets;
         let total_added = Arc::clone(&self.total_added);
+        let dbg_all = Arc::clone(&self.dbg_pcap_all);
+        let dbg_ipv4 = Arc::clone(&self.dbg_pcap_ipv4);
+        let iface = iface_name.to_string();
 
         // Clear any previous error
         if let Ok(mut e) = error_msg.lock() {
@@ -64,7 +72,7 @@ impl PacketSniffer {
         self.active.store(true, Ordering::Relaxed);
 
         self.handle = Some(thread::spawn(move || {
-            sniffer_thread(snippets, active, error_msg, max, total_added);
+            sniffer_thread(snippets, active, error_msg, max, total_added, dbg_all, dbg_ipv4, &iface);
         }));
     }
 
@@ -129,9 +137,13 @@ fn sniffer_thread(
     error_msg: Arc<Mutex<Option<String>>>,
     max_snippets: usize,
     total_added: Arc<AtomicUsize>,
+    dbg_all: Arc<AtomicUsize>,
+    dbg_ipv4: Arc<AtomicUsize>,
+    iface_name: &str,
 ) {
-    // Find a suitable capture device.
-    // Prefer "any" pseudo-device if available, otherwise first non-loopback.
+    // Find the capture device. If an interface name was given (from the app's
+    // PSNET_INTERFACE or auto-detected primary), use it directly. Otherwise
+    // prefer "any", then first non-loopback physical interface.
     let device = {
         let devices = match Device::list() {
             Ok(d) => d,
@@ -141,56 +153,35 @@ fn sniffer_thread(
                 return;
             }
         };
-        // If PSNET_INTERFACE is set and non-empty, use that interface explicitly
-        if let Ok(iface) = std::env::var("PSNET_INTERFACE") {
-            if !iface.is_empty() {
-                if let Some(dev) = devices.iter().find(|d| d.name == iface) {
+        if !iface_name.is_empty() && iface_name != "any" {
+            // Use the app's selected physical interface (avoids "any" perf issues)
+            if let Some(dev) = devices.iter().find(|d| d.name == iface_name) {
+                dev.clone()
+            } else {
+                // Fall through to auto-select instead of failing
+                let non_lo = devices.iter().find(|d| {
+                    let name = &d.name;
+                    !name.contains("lo") && !d.name.contains("docker") && !d.name.contains("veth")
+                        && !d.name.contains("br-") && !d.name.contains("virbr")
+                });
+                if let Some(dev) = non_lo {
                     dev.clone()
                 } else {
-                    let _ = set_error(&error_msg, &format!("Interface '{}' not found", iface));
+                    let _ = set_error(&error_msg, &format!("Interface '{}' not found and no fallback available", iface_name));
                     active.store(false, Ordering::Relaxed);
                     return;
                 }
-            } else {
-                // Empty PSNET_INTERFACE, auto-select
-                let any = devices.iter().find(|d| d.name == "any");
-                if let Some(dev) = any {
-                    dev.clone()
-                } else {
-                    let non_lo = devices.iter().find(|d| {
-                        let name = &d.name;
-                        !name.contains("lo") &&
-                        !name.contains("docker") &&
-                        !name.contains("veth") &&
-                        !name.contains("br-") &&
-                        !name.contains("virbr") &&
-                        !name.contains("bnep") &&
-                        !name.contains("bluetooth") &&
-                        !name.contains("nfqueue") &&
-                        !name.contains("dbus")
-                    });
-                    if let Some(dev) = non_lo {
-                        dev.clone()
-                    } else {
-                        let _ = set_error(&error_msg, "No suitable network interface found");
-                        active.store(false, Ordering::Relaxed);
-                        return;
-                    }
-                }
             }
         } else {
-            // No PSNET_INTERFACE, auto-select
+            // Prefer "any", then first real interface
             let any = devices.iter().find(|d| d.name == "any");
             if let Some(dev) = any {
                 dev.clone()
             } else {
                 let non_lo = devices.iter().find(|d| {
                     let name = &d.name;
-                    !name.contains("lo") &&
-                    !name.contains("docker") &&
-                    !name.contains("veth") &&
-                    !name.contains("br-") &&
-                    !name.contains("virbr")
+                    !name.contains("lo") && !name.contains("docker") && !name.contains("veth")
+                        && !name.contains("br-") && !name.contains("virbr")
                 });
                 if let Some(dev) = non_lo {
                     dev.clone()
@@ -203,7 +194,10 @@ fn sniffer_thread(
         }
     };
 
-    // Build capture using builder pattern: promiscuous mode, snaplen 65536, timeout 100ms.
+    // Build capture: no promisc (unsupported on "any"), small snaplen to
+    // maximize mmap ring frame count, large kernel buffer to prevent drops.
+    // Snaplen 2048 is enough for IP+TCP headers + some payload; the mmap
+    // ring has buffer_size/snaplen frames — more frames = fewer drops.
     let cap_builder = match Capture::from_device(device) {
         Ok(builder) => builder,
         Err(e) => {
@@ -214,9 +208,10 @@ fn sniffer_thread(
     };
 
     let cap_builder = cap_builder
-        .promisc(true)
-        .snaplen(65536)
-        .timeout(100);
+        .promisc(false)
+        .snaplen(256)  // only need headers + a few payload bytes
+        .timeout(100)
+        .buffer_size(4 * 1024 * 1024);
 
     let mut cap = match cap_builder.open() {
         Ok(cap) => cap,
@@ -230,6 +225,9 @@ fn sniffer_thread(
             return;
         }
     };
+
+    // BPF filter: IPv4 TCP/UDP only, with payload
+    let _ = cap.filter("ip and (tcp or udp)", true);
 
     // Clear any previous error — we're live
     if let Ok(mut e) = error_msg.lock() {
@@ -246,7 +244,9 @@ fn sniffer_thread(
     while active.load(Ordering::Relaxed) {
         match cap.next_packet() {
             Ok(pkt) => {
+                dbg_all.fetch_add(1, Ordering::Relaxed);
                 if let Some(snippet) = parse_packet(&pkt, local_ip_v4) {
+                    dbg_ipv4.fetch_add(1, Ordering::Relaxed);
                     if let Ok(mut lock) = snippets.lock() {
                         lock.push_back(snippet);
                         total_added.fetch_add(1, Ordering::Relaxed);

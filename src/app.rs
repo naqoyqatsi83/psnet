@@ -255,7 +255,25 @@ impl App {
 
             sniffer: {
                 let mut s = PacketSniffer::new(5000);
-                s.start();
+                // Use the physical interface, NOT "any" — the "any" interface has
+                // severe packet-drop issues with pcap on Linux (only ~6% of packets
+                // make it through the mmap ring buffer).
+                let snif_iface = if let Ok(iface) = env::var("PSNET_INTERFACE") {
+                    iface
+                } else {
+                    match Device::list() {
+                        Ok(devices) => {
+                            let non_lo = devices.iter().find(|d| {
+                                let name = &d.name;
+                                !name.contains("lo") && !name.contains("docker") && !name.contains("veth")
+                                    && !name.contains("br-") && !name.contains("virbr")
+                            });
+                            non_lo.map(|d| d.name.clone()).unwrap_or_else(|| "any".to_string())
+                        }
+                        Err(_) => "any".to_string(),
+                    }
+                };
+                s.start(&snif_iface);
                 s
             },
 
@@ -557,30 +575,40 @@ impl App {
             }
 
             // Per-connection bandwidth from packets.
-            // Determine direction using the scanner's reliable local_ip
-            // rather than the sniffer's (which may pick a Docker/virtual IP
-            // when interfaces are iterated in an unexpected order).
-            let my_ip: Option<IpAddr> = self.network_scanner.local_ip.map(IpAddr::V4);
-            for pkt in &new_packets {
-                let is_inbound = match my_ip {
-                    Some(ip) => pkt.dst_ip == ip,  // packet arriving at our IP
-                    None => pkt.direction == PacketDirection::Inbound, // fallback
-                };
-                // Key by src→dst order always
-                let key = ConnKey {
-                    proto: pkt.protocol,
-                    local_addr: pkt.src_ip,
-                    local_port: pkt.src_port,
-                    remote_addr: Some(pkt.dst_ip),
-                    remote_port: Some(pkt.dst_port),
-                };
-                let entry = self.conn_bandwidth.entry(key).or_insert((0, 0));
-                if is_inbound {
-                    entry.0 += pkt.payload_size as u64;
-                } else {
-                    entry.1 += pkt.payload_size as u64;
+            let mut matched = 0u64;
+            let mut total_pkts = 0u64;
+            // Build a lookup from (proto, src_ip, src_port, dst_ip, dst_port) → ConnKey
+            // covering both directions so we never need a global "my_ip".
+            let mut pkt_map: HashMap<(ConnProto, IpAddr, u16, IpAddr, u16), ConnKey> = HashMap::new();
+            for conn in &self.connections {
+                if let (Some(rip), Some(rp)) = (conn.remote_addr, conn.remote_port) {
+                    // src→dst ordering (outbound)
+                    pkt_map.insert((conn.proto, conn.local_addr, conn.local_port, rip, rp), conn.key());
+                    // dst→src ordering (inbound)
+                    pkt_map.insert((conn.proto, rip, rp, conn.local_addr, conn.local_port), conn.key());
                 }
             }
+            for pkt in &new_packets {
+                total_pkts += 1;
+                let pkt_key = (pkt.protocol, pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port);
+                if let Some(conn_key) = pkt_map.get(&pkt_key) {
+                    matched += 1;
+                    let entry = self.conn_bandwidth.entry(conn_key.clone()).or_insert((0, 0));
+                    if pkt.dst_ip == conn_key.local_addr {
+                        entry.0 += pkt.payload_size as u64;
+                    } else {
+                        entry.1 += pkt.payload_size as u64;
+                    }
+                }
+            }
+            let snif = &self.sniffer;
+            self.status_message = Some((
+                format!("pkt:{} mch:{} pcap_all:{} ipv4:{} snif_err:{:?}", total_pkts, matched,
+                    snif.dbg_pcap_all.load(std::sync::atomic::Ordering::Relaxed),
+                    snif.dbg_pcap_ipv4.load(std::sync::atomic::Ordering::Relaxed),
+                    snif.get_error()),
+                std::time::Instant::now(),
+            ));
 
             // Per-device bandwidth: correlate packets with LAN device IPs
             // Build IP→index HashMap for O(1) lookups
@@ -658,25 +686,11 @@ impl App {
         }
 
         // Overlay per-connection bandwidth from packet capture.
-        // Since we key by src→dst order, outbound data lives in the
-        // forward key (entry.1 = sent) and inbound data lives in the
-        // reverse key (entry.0 = received). Try both independently.
+        // Keys are already normalized to conn.key() in accumulation.
         for conn in &mut self.connections {
-            let key = conn.key();
-            if let Some(&(_, tx)) = self.conn_bandwidth.get(&key) {
-                conn.bytes_sent = tx; // forward key: entry.1 = data FROM the src (us)
-            }
-            if let (Some(raddr), Some(rport)) = (conn.remote_addr, conn.remote_port) {
-                let rev_key = ConnKey {
-                    proto: conn.proto,
-                    local_addr: raddr,
-                    local_port: rport,
-                    remote_addr: Some(conn.local_addr),
-                    remote_port: Some(conn.local_port),
-                };
-                if let Some(&(rx, _)) = self.conn_bandwidth.get(&rev_key) {
-                    conn.bytes_received = rx; // reverse key: entry.0 = data TO the dst (us)
-                }
+            if let Some(&(rx, tx)) = self.conn_bandwidth.get(&conn.key()) {
+                conn.bytes_received = rx;
+                conn.bytes_sent = tx;
             }
         }
 
@@ -903,8 +917,8 @@ impl App {
         // Update interface name in UI
         self.interface_name = next_dev.name.clone();
 
-        // Restart sniffer
-        self.sniffer.start();
+        // Restart sniffer on the new interface
+        self.sniffer.start(&next_dev.name);
 
         // Status message
         self.status_message = Some((format!("Switched to interface: {}", self.interface_name), std::time::Instant::now()));
