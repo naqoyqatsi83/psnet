@@ -169,6 +169,21 @@ fn draw_alert_detail(f: &mut Frame, area: Rect, alert: &crate::types::Alert) {
 // ─── Device detail ───────────────────────────────────────────────────────────
 
 fn draw_device_detail(f: &mut Frame, area: Rect, device: &crate::types::LanDevice, app: &App) {
+    // Look up live bandwidth data from scanner — the detail popup is a snapshot
+    // taken when opened, but bandwidth accumulates over time. Always show current.
+    let mut dev = device.clone();
+    if let Some(live) = app.network_scanner.devices.iter().find(|d| d.ip == dev.ip) {
+        dev.bytes_received = live.bytes_received;
+        dev.bytes_sent = live.bytes_sent;
+        dev.speed_received = live.speed_received;
+        dev.speed_sent = live.speed_sent;
+        dev.tick_received = live.tick_received;
+        dev.tick_sent = live.tick_sent;
+        dev.is_online = live.is_online;
+        dev.last_seen = live.last_seen;
+    }
+    let device = &dev;
+
     let is_gateway = app.network_scanner.gateway
         .map(|gw| device.ip == std::net::IpAddr::V4(gw))
         .unwrap_or(false);
