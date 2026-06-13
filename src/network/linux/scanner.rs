@@ -100,56 +100,80 @@ impl NetworkScanner {
             self.scanning.store(0, Ordering::Relaxed);
             return None;
         }
-        let mut devices = Vec::new();
         let now = Utc::now().naive_utc().time();
 
-        // Build a lookup by MAC from existing devices to preserve first_seen.
-        let existing: std::collections::HashMap<&str, &LanDevice> = self.devices
-            .iter()
-            .filter(|d| !d.mac.is_empty())
-            .map(|d| (d.mac.as_str(), d))
-            .collect();
-
-        for upd in pending.drain(..) {
-            let mac_str = upd.mac.clone();
-            // Resolve hostname: prioritize DHCP, then ARP, then IP
-            let dhcp_name = self.dhcp_hostnames.lock().unwrap().get(&IpAddr::V4(upd.ip)).cloned();
-            let mut hostname = dhcp_name.or_else(|| upd.hostname.clone()).unwrap_or_else(|| upd.ip.to_string());
-            if let Some(label) = self.custom_labels.get(&mac_str) {
-                hostname = label.clone();
+        // Index existing devices by MAC and by IP for merging.
+        let mut by_mac: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_ip: std::collections::HashMap<IpAddr, usize> = std::collections::HashMap::new();
+        for (i, d) in self.devices.iter().enumerate() {
+            if !d.mac.is_empty() {
+                by_mac.entry(d.mac.clone()).or_insert(i);
             }
-            let vendor = Some(mac_vendor_lookup(&mac_str).unwrap_or("Unknown").to_string());
-
-            // Preserve first_seen for known devices; update last_seen.
-            // Also preserve cumulative byte counters and speed data.
-            let (first_seen, last_seen, bytes_sent, bytes_received, tick_sent, tick_received, speed_sent, speed_received) = if let Some(known) = existing.get(mac_str.as_str()) {
-                (known.first_seen, now, known.bytes_sent, known.bytes_received, known.tick_sent, known.tick_received, known.speed_sent, known.speed_received)
-            } else {
-                (now, now, 0, 0, 0, 0, 0.0, 0.0)
-            };
-
-            devices.push(LanDevice {
-                ip: IpAddr::V4(upd.ip),
-                mac: mac_str.clone(),
-                hostname: Some(hostname),
-                vendor,
-                first_seen,
-                last_seen,
-                is_online: true,
-                custom_name: self.custom_labels.get(&mac_str).cloned(),
-                discovery_info: upd.discovery_info,
-                open_ports: upd.open_ports,
-                bytes_sent,
-                bytes_received,
-                tick_sent,
-                tick_received,
-                speed_sent,
-                speed_received,
-            });
+            by_ip.entry(d.ip).or_insert(i);
         }
-        self.devices = devices.clone();
+
+        let pending_updates: Vec<DeviceUpdate> = pending.drain(..).collect();
+        let mut seen_macs: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for upd in &pending_updates {
+            let mac_str = &upd.mac;
+            let ip = IpAddr::V4(upd.ip);
+
+            // Resolve hostname: prioritize DHCP, then ARP, then IP
+            let dhcp_name = self.dhcp_hostnames.lock().unwrap().get(&ip).cloned();
+            let hostname = dhcp_name.or_else(|| upd.hostname.clone()).unwrap_or_else(|| upd.ip.to_string());
+            let label = self.custom_labels.get(mac_str).cloned();
+            let vendor = Some(mac_vendor_lookup(mac_str).unwrap_or("Unknown").to_string());
+
+            // Try to match an existing device — prefer MAC, fall back to IP.
+            let existing_idx = by_mac.get(mac_str).copied()
+                .or_else(|| by_ip.get(&ip).copied());
+
+            if let Some(idx) = existing_idx {
+                let dev = &mut self.devices[idx];
+                dev.mac = mac_str.clone();
+                dev.ip = ip;
+                dev.last_seen = now;
+                dev.is_online = true;
+                if let Some(label) = label {
+                    dev.hostname = Some(label);
+                } else {
+                    dev.hostname = Some(hostname);
+                }
+                dev.vendor = vendor;
+                seen_macs.insert(dev.mac.clone());
+            } else {
+                // New device — not seen before in ARP
+                self.devices.push(LanDevice {
+                    ip,
+                    mac: mac_str.clone(),
+                    hostname: Some(hostname),
+                    vendor,
+                    first_seen: now,
+                    last_seen: now,
+                    is_online: true,
+                    custom_name: label,
+                    discovery_info: upd.discovery_info.clone(),
+                    open_ports: upd.open_ports.clone(),
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    tick_sent: 0,
+                    tick_received: 0,
+                    speed_sent: 0.0,
+                    speed_received: 0.0,
+                });
+            }
+        }
+
+        // Mark devices not seen in this ARP scan as offline.
+        for dev in &mut self.devices {
+            if !dev.mac.is_empty() && !seen_macs.contains(&dev.mac) {
+                dev.is_online = false;
+            }
+        }
+
         self.last_scan = Some(Instant::now());
-        Some(devices)
+        Some(self.devices.clone())
     }
     pub fn tick(&mut self) {
         self.scan_tick += 1;
@@ -201,5 +225,72 @@ impl NetworkScanner {
 }
 
 fn get_local_subnet() -> (Option<Ipv4Addr>, Option<Ipv4Addr>, Option<Ipv4Addr>) {
-    (None, None, None)
+    use std::process::Command;
+
+    // 1. Find default gateway and its interface from `ip route show default`
+    let mut gateway: Option<Ipv4Addr> = None;
+    let mut primary_iface: Option<String> = None;
+    if let Ok(output) = Command::new("ip").args(["route", "show", "default"]).output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // default via 192.168.1.1 dev wlan0 ...
+            if parts.len() >= 5 && parts[0] == "default" && parts[1] == "via" {
+                if let Ok(gw) = parts[2].parse::<Ipv4Addr>() {
+                    gateway = Some(gw);
+                    primary_iface = Some(parts[4].to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    // 2. Get IP and prefix for the primary interface (or first non-loopback)
+    let mut local_ip: Option<Ipv4Addr> = None;
+    let mut netmask: Option<Ipv4Addr> = None;
+
+    fn parse_addr(iface: &str) -> Option<(Ipv4Addr, Ipv4Addr)> {
+        let output = Command::new("ip").args(["-4", "-o", "addr", "show", iface]).output().ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 4 { continue; }
+            let cidr = parts[3];
+            let mut slash = cidr.split('/');
+            let ip_str = slash.next()?;
+            let prefix_str = slash.next()?;
+            let prefix = prefix_str.parse::<u8>().ok()?;
+            let ip = ip_str.parse::<Ipv4Addr>().ok()?;
+            let mask = Ipv4Addr::from((0xFFFFFFFFu32 << (32 - prefix)) & 0xFFFFFFFF);
+            return Some((ip, mask));
+        }
+        None
+    }
+
+    if let Some(ref iface) = primary_iface {
+        if let Some((ip, mask)) = parse_addr(iface) {
+            local_ip = Some(ip);
+            netmask = Some(mask);
+        }
+    }
+
+    // Fallback: scan all non-loopback interfaces
+    if local_ip.is_none() {
+        if let Ok(output) = Command::new("ip").args(["-4", "-o", "addr", "show"]).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 4 { continue; }
+                let iface = parts[1].split(':').last().unwrap_or(parts[1]);
+                if iface == "lo" { continue; }
+                if let Some((ip, mask)) = parse_addr(iface) {
+                    local_ip = Some(ip);
+                    netmask = Some(mask);
+                    break;
+                }
+            }
+        }
+    }
+
+    (local_ip, netmask, gateway)
 }

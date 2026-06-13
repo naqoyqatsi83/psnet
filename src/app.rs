@@ -476,8 +476,8 @@ impl App {
             }
 
             // Per-device bandwidth: correlate packets with LAN device IPs
-            // Build IP→index HashMap for O(1) lookups instead of O(n) per packet
-            let device_ip_index: HashMap<IpAddr, usize> = self.network_scanner.devices
+            // Build IP→index HashMap for O(1) lookups
+            let mut device_ip_index: HashMap<IpAddr, usize> = self.network_scanner.devices
                 .iter()
                 .enumerate()
                 .map(|(i, d)| (d.ip, i))
@@ -487,6 +487,35 @@ impl App {
                 (Some(ip), Some(mask)) => Some((u32::from(ip) & u32::from(mask), u32::from(mask))),
                 _ => None,
             };
+
+            // Ensure the gateway always has a device entry so internet traffic
+            // gets attributed even if the router isn't in the ARP table.
+            if let Some(gw) = self.network_scanner.gateway {
+                let gw_ip = IpAddr::V4(gw);
+                if !device_ip_index.contains_key(&gw_ip) {
+                    let now = chrono::Local::now().time();
+                    device_ip_index.insert(gw_ip, self.network_scanner.devices.len());
+                    self.network_scanner.devices.push(LanDevice {
+                        ip: gw_ip,
+                        mac: String::new(),
+                        hostname: Some(format!("Router ({})", gw)),
+                        vendor: None,
+                        first_seen: now,
+                        last_seen: now,
+                        is_online: true,
+                        custom_name: None,
+                        discovery_info: "Gateway (auto)".to_string(),
+                        open_ports: String::new(),
+                        bytes_sent: 0,
+                        bytes_received: 0,
+                        tick_sent: 0,
+                        tick_received: 0,
+                        speed_sent: 0.0,
+                        speed_received: 0.0,
+                    });
+                }
+            }
+
             let gateway_idx: Option<usize> = self.network_scanner.gateway
                 .and_then(|gw| device_ip_index.get(&IpAddr::V4(gw)).copied());
 
@@ -517,6 +546,56 @@ impl App {
                         dev.bytes_sent += bytes;
                         dev.tick_sent += bytes;
                     }
+                }
+            }
+        }
+
+        // Fallback: when no pcap data, estimate device traffic from connections
+        if new_packets.is_empty() && (tick_delta_down > 0 || tick_delta_up > 0) {
+            let device_ip_index: HashMap<IpAddr, usize> = self.network_scanner.devices
+                .iter()
+                .enumerate()
+                .map(|(i, d)| (d.ip, i))
+                .collect();
+
+            let local_net: Option<(u32, u32)> = match (self.network_scanner.local_ip, self.network_scanner.subnet_mask) {
+                (Some(ip), Some(mask)) => Some((u32::from(ip) & u32::from(mask), u32::from(mask))),
+                _ => None,
+            };
+            let gateway_idx: Option<usize> = self.network_scanner.gateway
+                .and_then(|gw| device_ip_index.get(&IpAddr::V4(gw)).copied());
+
+            let mut dev_conn_counts: HashMap<usize, usize> = HashMap::new();
+            let mut total_active = 0usize;
+            for conn in &self.connections {
+                if !matches!(conn.state.as_ref(), Some(TcpState::Established)) { continue; }
+                let Some(remote_ip) = conn.remote_addr else { continue; };
+                let dev_idx = if let Some(&idx) = device_ip_index.get(&remote_ip) {
+                    Some(idx)
+                } else if let Some(ref net) = local_net {
+                    match remote_ip {
+                        IpAddr::V4(v4) if (u32::from(v4) & net.1) != net.0 => gateway_idx,
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(idx) = dev_idx {
+                    *dev_conn_counts.entry(idx).or_insert(0) += 1;
+                    total_active += 1;
+                }
+            }
+
+            if total_active > 0 {
+                for (&idx, &count) in &dev_conn_counts {
+                    let fraction = count as f64 / total_active as f64;
+                    let dev = &mut self.network_scanner.devices[idx];
+                    let down = (tick_delta_down as f64 * fraction) as u64;
+                    let up = (tick_delta_up as f64 * fraction) as u64;
+                    dev.bytes_received += down;
+                    dev.tick_received += down;
+                    dev.bytes_sent += up;
+                    dev.tick_sent += up;
                 }
             }
         }
