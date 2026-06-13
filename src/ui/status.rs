@@ -114,7 +114,9 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             key_span("Esc", "Clear"),
         ],
         BottomTab::Devices => vec![
-            key_span("s", "Scan Now"),
+            key_span("s", "ARP Scan"),
+            key_span("p", "Ports"),
+            key_span("P", "FullScan"),
             key_span("r", "Rename"),
             key_span("o", &format!("Offline:{}", if app.hide_offline_devices { "Hidden" } else { "Shown" })),
             key_span("1-9", "Sort"),

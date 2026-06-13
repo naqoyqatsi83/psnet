@@ -1135,3 +1135,12 @@ pub struct ListeningPort {
     pub response_headers: Vec<(String, String)>,
     pub first_seen: Option<NaiveDateTime>,
 }
+
+// ─── Port scan state ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub enum DevicePortScanState {
+    Idle,
+    InProgress { scanned: usize, total: usize },
+    Done,
+}

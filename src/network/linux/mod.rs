@@ -3,3 +3,4 @@ pub mod scanner;
 pub mod system_monitor;
 pub mod servers;
 pub mod networks;
+pub mod port_scanner;

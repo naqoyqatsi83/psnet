@@ -1,5 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::process::Command;
@@ -23,6 +24,7 @@ use crate::network::scanner::NetworkScanner;
 use crate::network::servers::ServersScanner;
 use crate::types::ListenProto;
 use crate::network::sniffer::PacketSniffer;
+use crate::network::port_scanner::PortScanEvent;
 use crate::network::speed::get_network_bytes;
 use crate::network::system_monitor::SystemMonitor;
 use crate::network::threats::ThreatDetector;
@@ -143,6 +145,12 @@ pub struct App {
     pub renaming_device: Option<usize>,
     /// Text buffer for device rename.
     pub device_rename_text: String,
+
+    // Port scan state
+    pub device_port_scans: HashMap<IpAddr, DevicePortScanState>,
+    pub port_scan_events: Arc<Mutex<VecDeque<(IpAddr, PortScanEvent)>>>,
+    pub port_scan_cancel: Arc<AtomicBool>,
+    pub port_scan_msg: Option<String>,
 
     // World map: recently-closed connections shown as fading dots.
     // (remote_addr, country_code, tick_when_closed)
@@ -282,10 +290,14 @@ impl App {
             alert_pane_scrolls: [0; 6],
             alert_pane_rects: Vec::new(),
 
-            incognito: false,
+            incognito: true,
             hide_offline_devices: true,
             renaming_device: None,
             device_rename_text: String::new(),
+            device_port_scans: HashMap::new(),
+            port_scan_events: Arc::new(Mutex::new(VecDeque::new())),
+            port_scan_cancel: Arc::new(AtomicBool::new(false)),
+            port_scan_msg: None,
 
             map_fading_dots: Vec::new(),
             map_prev_remote_ips: HashSet::new(),
@@ -345,7 +357,41 @@ impl App {
             }
         }
 
+        self.poll_port_scan_results();
+
         changed
+    }
+
+    fn poll_port_scan_results(&mut self) {
+        let events = {
+            if let Ok(mut q) = self.port_scan_events.lock() {
+                std::mem::take(&mut *q)
+            } else {
+                return;
+            }
+        };
+        for (ip, event) in events {
+            match event {
+                PortScanEvent::Progress { scanned, total } => {
+                    self.device_port_scans.insert(ip, DevicePortScanState::InProgress { scanned, total });
+                }
+                PortScanEvent::Complete(result) => {
+                    self.device_port_scans.insert(ip, DevicePortScanState::Done);
+                    // Update the device's open_ports string
+                    if let Some(device) = self.network_scanner.devices.iter_mut().find(|d| d.ip == ip) {
+                        device.open_ports = format_open_ports(&result.ports);
+                    }
+                    let dur = result.duration_ms;
+                    let port_count = result.ports.len();
+                    self.port_scan_msg = Some(format!(
+                        "Scan complete: {} open port{} in {}ms",
+                        port_count,
+                        if port_count == 1 { "" } else { "s" },
+                        dur,
+                    ));
+                }
+            }
+        }
     }
 
     /// Poll deferred initialization results (background file loads).
@@ -930,6 +976,23 @@ impl App {
         } else {
             self.networks_sort_column = col;
             self.networks_sort_ascending = true;
+        }
+    }
+
+    /// Start a port scan on the given IP. Cancels any previous scan.
+    fn start_device_port_scan(&mut self, ip: IpAddr, full: bool) {
+        // Cancel previous scan
+        self.port_scan_cancel.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.port_scan_cancel = cancel.clone();
+        self.port_scan_msg = None;
+        self.device_port_scans.insert(ip, DevicePortScanState::InProgress { scanned: 0, total: if full { 65535 } else { 33 } });
+
+        let events = self.port_scan_events.clone();
+        if full {
+            crate::network::port_scanner::start_full_scan(ip, events, cancel);
+        } else {
+            crate::network::port_scanner::start_common_scan(ip, events, cancel);
         }
     }
 
@@ -1729,8 +1792,40 @@ impl App {
             KeyCode::Char('7') => self.toggle_device_sort(7),
             KeyCode::Char('8') => self.toggle_device_sort(8),
             KeyCode::Char('9') => self.toggle_device_sort(9),
+            // Port scanning: p = quick common ports, P = full 1-65535
+            KeyCode::Char('p') => {
+                if !self.try_start_scan_selected_device(false) {
+                    self.port_scan_msg = Some("Incognito — press 'i' to allow active scans".into());
+                }
+            }
+            KeyCode::Char('P') => {
+                if !self.try_start_scan_selected_device(true) {
+                    self.port_scan_msg = Some("Incognito — press 'i' to allow active scans".into());
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Start a port scan on the currently selected device.
+    /// Returns false if blocked by incognito mode.
+    fn try_start_scan_selected_device(&mut self, full: bool) -> bool {
+        if self.incognito {
+            return false;
+        }
+        let filtered: Vec<IpAddr> = self.network_scanner.devices.iter()
+            .filter(|d| !self.hide_offline_devices || d.is_online)
+            .map(|d| d.ip)
+            .collect();
+        let total = filtered.len();
+        if total > 0 {
+            let sel = self.device_scroll.min(total - 1);
+            let ip = filtered[sel];
+            self.start_device_port_scan(ip, full);
+            let scan_type = if full { "Full" } else { "Quick" };
+            self.port_scan_msg = Some(format!("{} port scan started on {}", scan_type, ip));
+        }
+        true
     }
 
     /// Virtual row count for Networks tab (accounts for BT header + collapse).
@@ -2329,4 +2424,19 @@ fn column_from_x(x: u16, widths: &[u16], total_width: u16) -> Option<usize> {
         cursor += actual_w;
     }
     None
+}
+
+/// Format port scan results into the open_ports string (e.g. "22:SSH 80:HTTP").
+fn format_open_ports(ports: &[(u16, String)]) -> String {
+    ports
+        .iter()
+        .map(|(p, s)| {
+            if s.is_empty() {
+                format!("{p}")
+            } else {
+                format!("{p}:{s}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }

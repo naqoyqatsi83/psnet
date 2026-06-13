@@ -19,6 +19,8 @@ pub mod dns;
 pub mod sniffer;
 #[path = "linux/oui.rs"]
 pub mod oui;
+#[path = "linux/port_scanner.rs"]
+pub mod port_scanner;
 #[path = "linux/hostnames.rs"]
 pub mod hostnames;
 

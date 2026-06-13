@@ -9,6 +9,7 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::App;
+use crate::types::DevicePortScanState;
 use crate::utils::format_bytes;
 
 fn format_speed(bps: f64) -> String {
@@ -165,15 +166,32 @@ pub fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(vendor_color),
                 )),
                 Cell::from(Span::styled(
-                    if device.open_ports.is_empty() {
-                        "—".to_string()
-                    } else {
-                        device.open_ports.clone()
+                    {
+                        let scan_state = app.device_port_scans.get(&device.ip);
+                        match scan_state {
+                            Some(DevicePortScanState::InProgress { scanned, total }) => {
+                                if *scanned > 0 {
+                                    format!("Scanning {}/{}", scanned, total)
+                                } else {
+                                    "Starting scan...".to_string()
+                                }
+                            }
+                            _ => {
+                                if device.open_ports.is_empty() {
+                                    "—".to_string()
+                                } else {
+                                    device.open_ports.clone()
+                                }
+                            }
+                        }
                     },
-                    Style::default().fg(if device.open_ports.is_empty() {
-                        Color::Rgb(60, 70, 90)
-                    } else {
-                        Color::Rgb(180, 200, 120)
+                    Style::default().fg({
+                        let scan_state = app.device_port_scans.get(&device.ip);
+                        match scan_state {
+                            Some(DevicePortScanState::InProgress { .. }) => Color::Rgb(255, 200, 80),
+                            _ if device.open_ports.is_empty() => Color::Rgb(60, 70, 90),
+                            _ => Color::Rgb(180, 200, 120),
+                        }
                     }),
                 )),
                 Cell::from(Span::styled(
@@ -298,15 +316,21 @@ pub fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
                 .map(|d| {
                     let name = d.custom_name.as_deref().or(d.hostname.as_deref());
                     match name {
-                        Some(n) => format!(" r:rename \"{}\"  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
-                        None => " r:rename  s:scan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
+                        Some(n) => format!(" r:rename \"{}\"  s:scan  p:ports  P:fullscan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
+                        None => " r:rename  s:scan  p:ports  P:fullscan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
                     }
                 })
-                .unwrap_or_else(|| " r:rename  s:scan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
+                .unwrap_or_else(|| " s:scan  p:ports  P:fullscan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
         } else {
-            " s:scan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
+            " s:scan  p:ports  P:fullscan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
         };
-        Line::from(Span::styled(selected_name, Style::default().fg(Color::Rgb(55, 70, 100))))
+        let msg = app.port_scan_msg.as_deref().unwrap_or("");
+        let hint_text = if msg.is_empty() {
+            selected_name
+        } else {
+            format!("{} | {}", selected_name, msg)
+        };
+        Line::from(Span::styled(hint_text, Style::default().fg(Color::Rgb(55, 70, 100))))
     };
 
     let table = Table::new(
