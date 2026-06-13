@@ -34,6 +34,7 @@ pub struct NetworkScanner {
     pub local_ip: Option<Ipv4Addr>,
     pub gateway: Option<Ipv4Addr>,
     pub subnet_mask: Option<Ipv4Addr>,
+    pub local_mac: Option<String>,
     scan_tick: u32,
     pub custom_labels: HashMap<String, String>,
     labels_path: PathBuf,
@@ -44,7 +45,8 @@ pub struct NetworkScanner {
 
 impl NetworkScanner {
     pub fn new() -> Self {
-        let (local_ip, subnet_mask, gateway) = get_local_subnet();
+        let (local_ip, subnet_mask, gateway, primary_iface) = get_local_subnet();
+        let local_mac = primary_iface.as_ref().and_then(|i| get_interface_mac(i));
         let labels_path = Self::labels_path();
         let custom_labels = Self::load_labels(&labels_path);
         Self {
@@ -57,6 +59,7 @@ impl NetworkScanner {
             local_ip,
             gateway,
             subnet_mask,
+            local_mac,
             scan_tick: 0,
             custom_labels,
             labels_path,
@@ -174,7 +177,56 @@ impl NetworkScanner {
             }
         }
 
-        // Mark devices not seen in this ARP scan as offline.
+        // Ensure the local device has its MAC address filled in BEFORE offline marking.
+        // The local IP never appears in /proc/net/arp, so we add it from the interface.
+        if let (Some(local), Some(ref local_mac)) = (self.local_ip, self.local_mac.clone()) {
+            let local_ip = IpAddr::V4(local);
+            let existing = self.devices.iter_mut().find(|d| d.ip == local_ip);
+            if let Some(dev) = existing {
+                if dev.mac.is_empty() {
+                    dev.mac = local_mac.clone();
+                    dev.vendor = Some(mac_vendor_lookup(&dev.mac).unwrap_or("Unknown").to_string());
+                }
+                // Set hostname from kernel if it's just an IP string
+                if dev.hostname.as_deref().map_or(true, |h| h.parse::<Ipv4Addr>().is_ok()) {
+                    let hn = std::fs::read_to_string("/proc/sys/kernel/hostname")
+                        .ok().map(|s| s.trim().to_string());
+                    if let Some(hn) = hn {
+                        dev.hostname = Some(hn);
+                    }
+                }
+                dev.is_online = true;
+                seen_macs.insert(dev.mac.clone());
+            } else {
+                let now = Utc::now().naive_utc().time();
+                seen_macs.insert(local_mac.clone());
+                self.devices.push(LanDevice {
+                    ip: local_ip,
+                    mac: local_mac.clone(),
+                    hostname: Some(
+                        std::fs::read_to_string("/proc/sys/kernel/hostname")
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                            .unwrap_or_else(|| format!("{}", local))
+                    ),
+                    vendor: Some(mac_vendor_lookup(local_mac).unwrap_or("Unknown").to_string()),
+                    first_seen: now,
+                    last_seen: now,
+                    is_online: true,
+                    custom_name: None,
+                    discovery_info: "Local".to_string(),
+                    open_ports: String::new(),
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    tick_sent: 0,
+                    tick_received: 0,
+                    speed_sent: 0.0,
+                    speed_received: 0.0,
+                });
+            }
+        }
+
+        // Mark devices not seen in this ARP scan (or local handling) as offline.
         for dev in &mut self.devices {
             if !dev.mac.is_empty() && !seen_macs.contains(&dev.mac) {
                 dev.is_online = false;
@@ -342,7 +394,7 @@ impl NetworkScanner {
     }
 }
 
-fn get_local_subnet() -> (Option<Ipv4Addr>, Option<Ipv4Addr>, Option<Ipv4Addr>) {
+fn get_local_subnet() -> (Option<Ipv4Addr>, Option<Ipv4Addr>, Option<Ipv4Addr>, Option<String>) {
     use std::process::Command;
 
     // 1. Find default gateway and its interface from `ip route show default`
@@ -404,11 +456,17 @@ fn get_local_subnet() -> (Option<Ipv4Addr>, Option<Ipv4Addr>, Option<Ipv4Addr>) 
                 if let Some((ip, mask)) = parse_addr(iface) {
                     local_ip = Some(ip);
                     netmask = Some(mask);
+                    primary_iface = Some(iface.to_string());
                     break;
                 }
             }
         }
     }
 
-    (local_ip, netmask, gateway)
+    (local_ip, netmask, gateway, primary_iface)
+}
+
+fn get_interface_mac(iface: &str) -> Option<String> {
+    let path = format!("/sys/class/net/{}/address", iface);
+    std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
 }
