@@ -101,7 +101,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Interface selection popup
     if let Some(ref state) = app.interface_select_popup {
-        let w = 58u16.min(f.area().width.saturating_sub(4));
+        let w = 74u16.min(f.area().width.saturating_sub(4));
         let h = (state.interfaces.len() as u16 + 7).min(22).max(9);
         let area = Rect {
             x: f.area().x + (f.area().width - w) / 2,
@@ -147,23 +147,25 @@ fn draw_interface_select_popup(f: &mut Frame, area: Rect, state: &crate::app::In
         let checked = state.selected.get(i).copied().unwrap_or(false);
         let is_cursor = i == state.cursor;
         let cidr = mask_to_cidr(*ip, *mask);
-        let label = format!("  {}  {}  {:12}  {}",
-            if checked { "\u{2611}" } else { "\u{2610}" },
-            format!("{:18}", cidr),
-            name,
-            ip,
-        );
+        let checkbox_color = if checked {
+            Color::Rgb(80, 200, 120)
+        } else {
+            Color::Rgb(80, 85, 100)
+        };
+        let cb = if checked { "[x]" } else { "[ ]" };
         let fg = if is_cursor {
             Color::Rgb(255, 200, 80)
         } else {
             Color::Rgb(170, 185, 210)
         };
+        let row_mod = if is_cursor { Modifier::BOLD } else { Modifier::empty() };
         let prefix = if is_cursor { " \u{25b6} " } else { "    " };
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::Rgb(255, 200, 80))),
-            Span::styled(label, Style::default().fg(fg).add_modifier(
-                if is_cursor { Modifier::BOLD } else { Modifier::empty() }
-            )),
+            Span::styled(format!(" {}  ", cb), Style::default().fg(checkbox_color).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{:20}  ", cidr), Style::default().fg(fg).add_modifier(row_mod)),
+            Span::styled(format!("{:20}  ", name), Style::default().fg(Color::Rgb(140, 180, 240)).add_modifier(row_mod)),
+            Span::styled(ip.to_string(), Style::default().fg(Color::Rgb(100, 200, 255)).add_modifier(row_mod)),
         ]));
     }
 
