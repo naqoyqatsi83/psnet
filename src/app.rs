@@ -557,11 +557,16 @@ impl App {
             }
 
             // Per-connection bandwidth from packets.
-            // Always key by src→dst order (don't flip based on direction, since
-            // the sniffer's direction detection may use a wrong local IP when
-            // virtual interfaces like Docker are listed first by `ip addr`).
+            // Determine direction using the scanner's reliable local_ip
+            // rather than the sniffer's (which may pick a Docker/virtual IP
+            // when interfaces are iterated in an unexpected order).
+            let my_ip: Option<IpAddr> = self.network_scanner.local_ip.map(IpAddr::V4);
             for pkt in &new_packets {
-                let is_inbound = pkt.direction == PacketDirection::Inbound;
+                let is_inbound = match my_ip {
+                    Some(ip) => pkt.dst_ip == ip,  // packet arriving at our IP
+                    None => pkt.direction == PacketDirection::Inbound, // fallback
+                };
+                // Key by src→dst order always
                 let key = ConnKey {
                     proto: pkt.protocol,
                     local_addr: pkt.src_ip,
@@ -653,16 +658,15 @@ impl App {
         }
 
         // Overlay per-connection bandwidth from packet capture.
-        // Try both src→dst and dst→src key orderings since the sniffer's
-        // direction detection may not match the app's local IP perspective
-        // (e.g. when virtual interfaces like Docker are present).
+        // Try both src→dst and dst→src key orderings since the sniffer may
+        // key packets in the opposite direction from /proc/net connections.
         for conn in &mut self.connections {
             let key = conn.key();
             if let Some(&(rx, tx)) = self.conn_bandwidth.get(&key) {
                 conn.bytes_received = rx;
                 conn.bytes_sent = tx;
             } else if let (Some(raddr), Some(rport)) = (conn.remote_addr, conn.remote_port) {
-                // Try reversed: sniffer stored as src→dst, but connection is dst→src
+                // Try reversed key: stored as src→dst, connection is dst→src
                 let rev_key = ConnKey {
                     proto: conn.proto,
                     local_addr: raddr,
@@ -671,11 +675,9 @@ impl App {
                     remote_port: Some(conn.local_port),
                 };
                 if let Some(&(rx, tx)) = self.conn_bandwidth.get(&rev_key) {
-                    // Reversed: stored rx (data TO stored_key's local = connection's remote)
-                    // is data SENT by local (= tx). Stored tx (data FROM stored_key's local)
-                    // is data RECEIVED by local (= rx).
-                    conn.bytes_received = tx;
-                    conn.bytes_sent = rx;
+                    // Stored with src→dst keying, rx=data to local=our bytes_received
+                    conn.bytes_received = rx;
+                    conn.bytes_sent = tx;
                 }
             }
         }
