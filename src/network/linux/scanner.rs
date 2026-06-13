@@ -248,25 +248,43 @@ impl NetworkScanner {
         if self.aggressive_active.load(Ordering::Relaxed) {
             return;
         }
-        let (Some(local), Some(mask)) = (self.local_ip, self.subnet_mask) else {
-            return;
-        };
-        let local_u32 = u32::from(local);
-        let mask_u32 = u32::from(mask);
-        let network = local_u32 & mask_u32;
-        let wildcard = !mask_u32;
-        let broadcast = network | wildcard;
 
-        let first = network + 1;
-        let last = broadcast.saturating_sub(1);
-        // Limit to 1024 hosts max (don't scan /22 or larger)
-        if last.saturating_sub(first) > 1024 {
+        let all_ifs = get_all_interfaces();
+        if all_ifs.is_empty() {
             return;
         }
 
+        // Collect all IPs across all non-loopback interfaces
+        let mut all_ips: Vec<Ipv4Addr> = Vec::new();
+        for (local, mask, _) in &all_ifs {
+            let local_u32 = u32::from(*local);
+            let mask_u32 = u32::from(*mask);
+            let network = local_u32 & mask_u32;
+            let wildcard = !mask_u32;
+            let broadcast = network | wildcard;
+            let first = network + 1;
+            let last = broadcast.saturating_sub(1);
+            // Limit each subnet to 1024 hosts (don't scan /22 or larger per subnet)
+            if last.saturating_sub(first) > 1024 {
+                continue;
+            }
+            for n in first..=last {
+                all_ips.push(Ipv4Addr::from(n));
+            }
+        }
+
+        // Deduplicate in case interfaces share a subnet
+        all_ips.sort();
+        all_ips.dedup();
+
+        if all_ips.is_empty() {
+            return;
+        }
+
+        let total = all_ips.len();
         self.aggressive_active.store(true, Ordering::Relaxed);
         if let Ok(mut p) = self.aggressive_progress.lock() {
-            *p = (0, (last - first + 1) as usize);
+            *p = (0, total);
         }
 
         let pending = self.pending.clone();
@@ -274,12 +292,10 @@ impl NetworkScanner {
         let progress = self.aggressive_progress.clone();
 
         std::thread::spawn(move || {
-            let ips: Vec<Ipv4Addr> = (first..=last).map(|n| Ipv4Addr::from(n)).collect();
-            let total = ips.len();
             let mut responded: Vec<Ipv4Addr> = Vec::new();
 
             // Ping in batches of 20 concurrently
-            for (i, chunk) in ips.chunks(20).enumerate() {
+            for (i, chunk) in all_ips.chunks(20).enumerate() {
                 if !active.load(Ordering::Relaxed) {
                     return;
                 }
@@ -298,7 +314,7 @@ impl NetworkScanner {
                 }
                 for (j, h) in handles.into_iter().enumerate() {
                     if h.join().unwrap_or(false) {
-                        responded.push(ips[i * 20 + j]);
+                        responded.push(chunk[j]);
                     }
                 }
                 if let Ok(mut p) = progress.lock() {
@@ -469,4 +485,47 @@ fn get_local_subnet() -> (Option<Ipv4Addr>, Option<Ipv4Addr>, Option<Ipv4Addr>, 
 fn get_interface_mac(iface: &str) -> Option<String> {
     let path = format!("/sys/class/net/{}/address", iface);
     std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+}
+
+fn get_all_interfaces() -> Vec<(Ipv4Addr, Ipv4Addr, String)> {
+    let mut result = Vec::new();
+    let output = Command::new("ip")
+        .args(["-4", "-o", "addr", "show"])
+        .output()
+        .ok();
+    let text = match output {
+        Some(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+        None => return result,
+    };
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let iface = parts[1].split(':').last().unwrap_or(parts[1]);
+        if iface == "lo" {
+            continue;
+        }
+        let cidr = parts[3];
+        let mut slash = cidr.split('/');
+        let ip_str = match slash.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let prefix_str = match slash.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let prefix: u8 = match prefix_str.parse() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let ip: Ipv4Addr = match ip_str.parse() {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let mask = Ipv4Addr::from((0xFFFFFFFFu32 << (32 - prefix)) & 0xFFFFFFFF);
+        result.push((ip, mask, iface.to_string()));
+    }
+    result
 }
