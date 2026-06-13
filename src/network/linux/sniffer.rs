@@ -391,8 +391,10 @@ fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
         String::new()
     };
 
-    // Filter: For TCP, ignore pure ACK without payload; show SYN/FIN/RST.
-    if snippet.is_empty() {
+    // Filter: drop packets with no actual payload (pure ACKs, empty UDP).
+    // Check `payload.is_empty()` (actual bytes) not `snippet.is_empty()` (readable text)
+    // so encrypted TCP segments (TLS, SSH, etc.) still pass through for bandwidth tracking.
+    if payload.is_empty() {
         if protocol == 6 {
             let is_syn = tcp_flags & 0x02 != 0;
             let is_fin = tcp_flags & 0x01 != 0;
@@ -400,7 +402,7 @@ fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
             if !is_syn && !is_fin && !is_rst {
                 return None;
             }
-        } else if payload.is_empty() {
+        } else {
             return None;
         }
     }

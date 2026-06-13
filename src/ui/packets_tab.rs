@@ -647,8 +647,12 @@ fn render_packet_list(
                 format!("{} {}", flags_str, pkt.snippet)
             } else if !flags_str.is_empty() {
                 flags_str.clone()
-            } else {
+            } else if !pkt.snippet.is_empty() {
                 pkt.snippet.clone()
+            } else if pkt.payload_size > 0 {
+                format!("<{} bytes>", pkt.payload_size)
+            } else {
+                String::new()
             };
             let info_str = if info_base.chars().count() > max_info && max_info > 3 {
                 let t: String = info_base.chars().take(max_info.saturating_sub(3)).collect();
@@ -665,7 +669,11 @@ fn render_packet_list(
                 } else if pkt.tcp_flags & 0x01 != 0 {
                     Color::Magenta    // FIN
                 } else if pkt.snippet.is_empty() {
-                    Color::DarkGray   // ACK-only with no snippet
+                    if pkt.payload_size > 0 {
+                        Color::Rgb(60, 70, 90)  // binary data payload
+                    } else {
+                        Color::DarkGray         // ACK-only with no payload
+                    }
                 } else {
                     snippet_content_color(&pkt.snippet)
                 }
