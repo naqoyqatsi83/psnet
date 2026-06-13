@@ -79,11 +79,11 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             key_span("c", "Contrast"),
         ],
         BottomTab::Connections => vec![
-            key_span("1-5", "Sort"),
+            key_span("1-7", "Sort"),
             key_span("b", "Block"),
             key_span("l", &format!("Listen:{}", if app.show_listen { "ON" } else { "OFF" })),
             key_span("x", &format!("{}", if app.hide_localhost_conn { "Show Local" } else { "Hide Local" })),
-            key_span("f", "Filter"),
+            key_span("/", "Filter"),
             key_span("Esc", "Clear"),
         ],
         BottomTab::Servers => vec![
@@ -109,7 +109,7 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             key_span("1-4", "Sort"),
             key_span("r", "Refresh"),
             key_span("e", "Export"),
-            key_span("f", "Filter"),
+            key_span("/", "Filter"),
             key_span("x", "Reset All"),
             key_span("Esc", "Clear"),
         ],
@@ -124,9 +124,10 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
         ],
         BottomTab::Packets => vec![
             key_span("Space", &format!("{}", if app.packets_paused { "Resume" } else { "Pause" })),
-            key_span("d", "Detail"),
+            key_span("Enter", "Detail"),
+            key_span("t", "Type Pick"),
             key_span("c", "Clear"),
-            key_span("f", "Filter"),
+            key_span("/", "Filter"),
             key_span("Esc", "Clear"),
         ],
         BottomTab::Topology => vec![

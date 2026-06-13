@@ -41,6 +41,11 @@ pub fn draw_detail_popup(f: &mut Frame, app: &App) {
             f.render_widget(Clear, area);
             draw_server_detail(f, area, detail);
         }
+        DetailKind::Network(net) => {
+            let area = centered_rect(55, 45, f.area());
+            f.render_widget(Clear, area);
+            draw_network_detail(f, area, net);
+        }
     }
 }
 
@@ -611,9 +616,45 @@ fn section_divider(title: &str) -> Line<'static> {
 
 fn dismiss_line() -> Line<'static> {
     Line::from(Span::styled(
-        "  [ Enter / Esc to close ]",
+        "  [ q / Enter / Esc to close ]",
         Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
     ))
+}
+
+// ─── Network detail ──────────────────────────────────────────────────────────
+
+fn draw_network_detail(f: &mut Frame, area: Rect, net: &crate::types::NetworkDetail) {
+    let mut lines = header_lines(" Network Detail ");
+    lines.push(Line::from(""));
+    lines.push(section_divider("Network"));
+    lines.push(row("CIDR",       net.network.clone(),         Color::Rgb(100, 220, 255)));
+    lines.push(row("Netmask",    net.netmask.clone(),          Color::Rgb(150, 160, 180)));
+    lines.push(row("Gateway",    net.gateway.clone().unwrap_or_else(|| "\u{2014}".to_string()), Color::Rgb(180, 200, 120)));
+    lines.push(row("Type",       net.category.clone(),         Color::Rgb(100, 200, 240)));
+    lines.push(row("Interface",  net.iface.clone(),            Color::Rgb(140, 160, 200)));
+    lines.push(row("Metric",     net.metric.to_string(),       Color::Rgb(120, 130, 160)));
+    lines.push(Line::from(""));
+
+    if !net.devices.is_empty() {
+        lines.push(section_divider(format!("Detected Devices ({})", net.devices.len()).as_str()));
+        for (ip, hostname, online) in &net.devices {
+            let icon = if *online { "\u{25cf}" } else { "\u{25cb}" };
+            let color = if *online { Color::Rgb(80, 200, 120) } else { Color::Rgb(100, 100, 120) };
+            let label = if hostname.is_empty() || hostname == ip {
+                ip.clone()
+            } else {
+                format!("{} ({})", hostname, ip)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {} ", icon), Style::default().fg(color)),
+                Span::styled(label, Style::default().fg(Color::Rgb(100, 180, 255))),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(dismiss_line());
+    render_popup(f, area, lines);
 }
 
 /// Split a string into lines that fit within `max_width` characters,

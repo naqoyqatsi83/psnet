@@ -31,6 +31,9 @@ pub struct NetworksScanner {
     /// Persistent store of known BT devices across scans.
     /// Devices not seen in the latest scan are marked offline rather than removed.
     known_bt_devices: Vec<LanDevice>,
+    /// ARP-scanned LAN devices from the primary scanner, matched to networks
+    /// by IP range on each scan.
+    pub arp_devices: Vec<LanDevice>,
 }
 
 impl NetworksScanner {
@@ -44,6 +47,7 @@ impl NetworksScanner {
             primary_ip,
             results_ready: false,
             known_bt_devices: Vec::new(),
+            arp_devices: Vec::new(),
         }
     }
 
@@ -199,6 +203,22 @@ impl NetworksScanner {
 
     pub fn start_scan(&mut self) {
         self.scanning = true;
+
+        // ── Parse default gateways from ip route ─────────────────
+        let mut gateways: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Ok(output) = Command::new("ip").args(["route", "show", "default"]).output() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // default via 192.168.1.1 dev wlan0 proto dhcp ...
+                if parts.len() >= 5 && parts[0] == "default" && parts[1] == "via" {
+                    let gw = parts[2].to_string();
+                    let iface = parts[4].to_string();
+                    gateways.insert(iface, gw);
+                }
+            }
+        }
+
         let mut nets = Vec::new();
         let output = Command::new("ip")
             .args(["-4", "-o", "addr", "show"])
@@ -222,7 +242,7 @@ impl NetworksScanner {
             let Ok(ip) = ip_str.parse::<Ipv4Addr>() else { continue; };
             let netmask = Ipv4Addr::from((0xFFFFFFFFu32 << (32 - prefix)) & 0xFFFFFFFF);
             let network_addr = Ipv4Addr::from(u32::from(ip) & u32::from(netmask));
-            let gateway = None;
+            let gateway = gateways.get(iface).cloned();
 
             let iface_lower = iface.to_lowercase();
             if iface_lower.contains("lo") {
@@ -363,6 +383,32 @@ impl NetworksScanner {
                             speed_sent: 0.0,
                             speed_received: 0.0,
                         });
+                    }
+                }
+            }
+        }
+
+        // ── Cross-reference ARP-scanned devices ─────────────────────
+        for net in &mut nets {
+            if net.category == NetworkCategory::Bluetooth {
+                continue;
+            }
+            let net_cidr = net.network.clone();
+            let mut slash = net_cidr.split('/');
+            let Some(net_str) = slash.next() else { continue; };
+            let Some(prefix_str) = slash.next() else { continue; };
+            let Ok(net_ip) = net_str.parse::<Ipv4Addr>() else { continue; };
+            let Ok(prefix) = prefix_str.parse::<u8>() else { continue; };
+            let mask = Ipv4Addr::from((0xFFFFFFFFu32 << (32 - prefix)) & 0xFFFFFFFF);
+            let net_bits = u32::from(net_ip);
+
+            for device in &self.arp_devices {
+                if let IpAddr::V4(dev_ip) = device.ip {
+                    if (u32::from(dev_ip) & u32::from(mask)) == net_bits {
+                        let already = net.devices.iter().any(|d| d.mac == device.mac || d.ip == device.ip);
+                        if !already {
+                            net.devices.push(device.clone());
+                        }
                     }
                 }
             }

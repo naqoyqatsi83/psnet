@@ -80,7 +80,7 @@ impl NetworkScanner {
                 if let IpAddr::V4(v4) = ip {
                     let mac = fields[3].to_string();
                     if mac == "00:00:00:00:00:00" { continue; }
-                    let hostname = if fields[5] != "?" { Some(fields[5].to_string()) } else { None };
+                    let hostname = None; // fields[5] in /proc/net/arp is the interface, not a hostname
                     pending.push(DeviceUpdate {
                         ip: v4,
                         mac,
@@ -102,6 +102,14 @@ impl NetworkScanner {
         }
         let mut devices = Vec::new();
         let now = Utc::now().naive_utc().time();
+
+        // Build a lookup by MAC from existing devices to preserve first_seen.
+        let existing: std::collections::HashMap<&str, &LanDevice> = self.devices
+            .iter()
+            .filter(|d| !d.mac.is_empty())
+            .map(|d| (d.mac.as_str(), d))
+            .collect();
+
         for upd in pending.drain(..) {
             let mac_str = upd.mac.clone();
             // Resolve hostname: prioritize DHCP, then ARP, then IP
@@ -111,13 +119,21 @@ impl NetworkScanner {
                 hostname = label.clone();
             }
             let vendor = Some(mac_vendor_lookup(&mac_str).unwrap_or("Unknown").to_string());
+
+            // Preserve first_seen for known devices; update last_seen.
+            let (first_seen, last_seen) = if let Some(known) = existing.get(mac_str.as_str()) {
+                (known.first_seen, now)
+            } else {
+                (now, now)
+            };
+
             devices.push(LanDevice {
                 ip: IpAddr::V4(upd.ip),
                 mac: mac_str.clone(),
                 hostname: Some(hostname),
                 vendor,
-                first_seen: now,
-                last_seen: now,
+                first_seen,
+                last_seen,
                 is_online: true,
                 custom_name: self.custom_labels.get(&mac_str).cloned(),
                 discovery_info: upd.discovery_info,

@@ -460,6 +460,37 @@ pub enum PacketDirection {
     Outbound,
 }
 
+/// Protocol type filter for the Packets tab.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PacketTypeFilter {
+    #[default]
+    All,
+    Tcp,
+    Udp,
+    Dns,
+}
+
+impl PacketTypeFilter {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::All => "All",
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+            Self::Dns => "DNS",
+        }
+    }
+
+    /// Cycle to the next filter mode.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Tcp,
+            Self::Tcp => Self::Udp,
+            Self::Udp => Self::Dns,
+            Self::Dns => Self::All,
+        }
+    }
+}
+
 // ─── Alert types (GlassWire-style) ──────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -944,6 +975,20 @@ pub struct ThreatInfo {
     pub reason: String,
 }
 
+// ─── Network detail popup ─────────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct NetworkDetail {
+    pub network: String,      // CIDR, e.g. "172.17.0.0/16"
+    pub netmask: String,
+    pub gateway: Option<String>,
+    pub category: String,
+    pub name: String,
+    pub iface: String,
+    pub metric: u32,
+    pub devices: Vec<(String, String, bool)>, // (ip, hostname, is_online)
+}
+
 // ─── Detail popup ─────────────────────────────────────────────────────────────
 
 /// What is currently being shown in the detail popup overlay.
@@ -952,6 +997,7 @@ pub enum DetailKind {
     Connection(Connection),
     Alert(Alert),
     Device(LanDevice),
+    Network(NetworkDetail),
     FirewallApp(FirewallAppDetail),
     Server {
         kind_label: String,

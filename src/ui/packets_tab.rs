@@ -6,12 +6,12 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+    Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
 };
 use ratatui::Frame;
 
 use crate::app::App;
-use crate::types::{ConnProto, PacketDirection, PacketSnippet};
+use crate::types::{ConnProto, PacketDirection, PacketSnippet, PacketTypeFilter};
 
 // ─── Theme constants ─────────────────────────────────────────────────────────
 
@@ -226,6 +226,25 @@ fn format_size(bytes: usize) -> String {
 // ─── Filter matching ─────────────────────────────────────────────────────────
 
 fn matches_filter(pkt: &PacketSnippet, filter: &str, app: &App) -> bool {
+    // Protocol type filter (checked before text filter)
+    match app.packets_type_filter {
+        PacketTypeFilter::All => {}
+        PacketTypeFilter::Tcp => {
+            if pkt.protocol != ConnProto::Tcp {
+                return false;
+            }
+        }
+        PacketTypeFilter::Udp => {
+            if pkt.protocol != ConnProto::Udp {
+                return false;
+            }
+        }
+        PacketTypeFilter::Dns => {
+            if pkt.src_port != 53 && pkt.dst_port != 53 {
+                return false;
+            }
+        }
+    }
     if filter.is_empty() {
         return true;
     }
@@ -374,6 +393,11 @@ pub fn draw_packets_tab(f: &mut Frame, area: Rect, app: &App) {
     // 4. Footer
     let footer_idx = chunks.len() - 1;
     render_footer(f, chunks[footer_idx], app);
+
+    // 5. Type filter picker popup
+    if app.packets_type_picker {
+        render_type_picker(f, area, app);
+    }
 }
 
 // ─── Header ──────────────────────────────────────────────────────────────────
@@ -466,7 +490,7 @@ fn render_header(
         Style::default().fg(Color::Rgb(70, 85, 110)),
     ));
 
-    // Line 2: filter / error
+    // Line 2: type filter | text filter / error
     let line2 = if let Some(err) = app.sniffer.get_error() {
         Line::from(vec![
             Span::styled(
@@ -477,26 +501,46 @@ fn render_header(
             ),
             Span::styled(err, Style::default().fg(Color::Red)),
         ])
-    } else if !app.packets_filter.is_empty() {
-        Line::from(vec![
-            Span::styled(
-                " Filter: ",
+    } else if app.packets_type_filter != PacketTypeFilter::All || !app.packets_filter.is_empty() {
+        let mut spans: Vec<Span> = Vec::new();
+        if app.packets_type_filter != PacketTypeFilter::All {
+            let type_color = match app.packets_type_filter {
+                PacketTypeFilter::Dns => Color::Green,
+                PacketTypeFilter::Tcp => Color::Magenta,
+                PacketTypeFilter::Udp => Color::Blue,
+                _ => Color::White,
+            };
+            spans.push(Span::styled(
+                format!(" {} ", app.packets_type_filter.label()),
+                Style::default()
+                    .fg(type_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if !app.packets_filter.is_empty() {
+            spans.push(Span::styled(
+                " \u{2502} ",
+                Style::default().fg(Color::Rgb(50, 60, 85)),
+            ));
+            spans.push(Span::styled(
+                "Filter: ",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
+            ));
+            spans.push(Span::styled(
                 app.packets_filter.clone(),
                 Style::default().fg(Color::White),
-            ),
-            Span::styled(
+            ));
+            spans.push(Span::styled(
                 "\u{2588}",
                 Style::default().fg(Color::White),
-            ),
-        ])
+            ));
+        }
+        Line::from(spans)
     } else {
         Line::from(Span::styled(
-            " Type to filter \u{2022} / clears with Esc",
+            " Type:All \u{2022} / sorts by col",
             Style::default().fg(Color::Rgb(50, 65, 90)),
         ))
     };
@@ -777,7 +821,7 @@ fn render_detail_pane(
     selected_idx: usize,
 ) {
     let available = area.height.saturating_sub(2) as usize;
-    let mut lines: Vec<Line> = Vec::with_capacity(available);
+    let mut all_lines: Vec<Line> = Vec::new();
 
     let (dir_label, dir_color) = match pkt.direction {
         PacketDirection::Inbound => ("INBOUND", DIR_IN),
@@ -792,7 +836,7 @@ fn render_detail_pane(
     let (_, proto_label) = protocol_style(&pkt.protocol, relevant_port);
 
     // ── Protocol layer 1: Frame ──
-    lines.push(Line::from(vec![
+    all_lines.push(Line::from(vec![
         Span::styled("  Frame: ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::styled(
             format!(
@@ -812,7 +856,7 @@ fn render_detail_pane(
     ]));
 
     // ── Protocol layer 2: Network (IPv4/IPv6) ──
-    if lines.len() < available {
+    {
         let src_host = app
             .dns_cache
             .get(&pkt.src_ip)
@@ -834,7 +878,7 @@ fn render_detail_pane(
         };
 
         let ip_version = if pkt.src_ip.is_ipv4() { "IPv4" } else { "IPv6" };
-        lines.push(Line::from(vec![
+        all_lines.push(Line::from(vec![
             Span::styled(
                 format!("  {}: ", ip_version),
                 Style::default()
@@ -857,7 +901,7 @@ fn render_detail_pane(
     }
 
     // ── Protocol layer 3: Transport (TCP/UDP) ──
-    if lines.len() < available {
+    {
         let src_svc = port_service_label(pkt.src_port);
         let dst_svc = port_service_label(pkt.dst_port);
         let src_port_s = if !src_svc.is_empty() {
@@ -918,11 +962,11 @@ fn render_detail_pane(
             ));
         }
 
-        lines.push(Line::from(transport_spans));
+        all_lines.push(Line::from(transport_spans));
     }
 
     // ── Geo-IP enrichment ──
-    if lines.len() < available {
+    {
         let mut geo_spans: Vec<Span> = Vec::new();
         for (label, ip) in [("Src", pkt.src_ip), ("Dst", pkt.dst_ip)] {
             if let Some(geo) = app.geoip.lookup(ip) {
@@ -936,20 +980,18 @@ fn render_detail_pane(
             }
         }
         if !geo_spans.is_empty() {
-            lines.push(Line::from(geo_spans));
+            all_lines.push(Line::from(geo_spans));
         }
     }
 
     // ── Separator: Payload ──
-    if lines.len() < available {
-        lines.push(Line::from(Span::styled(
-            "  \u{2500}\u{2500}\u{2500} Payload \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-            Style::default().fg(Color::Rgb(40, 60, 90)),
-        )));
-    }
+    all_lines.push(Line::from(Span::styled(
+        "  \u{2500}\u{2500}\u{2500} Payload \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        Style::default().fg(Color::Rgb(40, 60, 90)),
+    )));
 
     // ── Payload text ──
-    if lines.len() < available && !pkt.snippet.is_empty() {
+    if !pkt.snippet.is_empty() {
         let snip_color = snippet_content_color(&pkt.snippet);
         let max_chars = (area.width as usize).saturating_sub(6);
         let display: String = if pkt.snippet.chars().count() > max_chars && max_chars > 3 {
@@ -958,21 +1000,19 @@ fn render_detail_pane(
         } else {
             pkt.snippet.clone()
         };
-        lines.push(Line::from(vec![
+        all_lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
             Span::styled(display, Style::default().fg(snip_color)),
         ]));
     }
 
     // ── Separator: Hex Dump ──
-    if lines.len() < available {
-        lines.push(Line::from(Span::styled(
-            "  \u{2500}\u{2500}\u{2500} Hex Dump \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-            Style::default().fg(Color::Rgb(40, 60, 90)),
-        )));
-    }
+    all_lines.push(Line::from(Span::styled(
+        "  \u{2500}\u{2500}\u{2500} Hex Dump \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
+        Style::default().fg(Color::Rgb(40, 60, 90)),
+    )));
 
-    // ── Hex dump with ASCII column (using raw_payload for actual binary data) ──
+    // ── Hex dump with ASCII column ──
     let hex_bytes = if !pkt.raw_payload.is_empty() {
         &pkt.raw_payload[..]
     } else {
@@ -981,13 +1021,12 @@ fn render_detail_pane(
     let bytes_per_row = 16;
     let mut offset = 0usize;
 
-    while offset < hex_bytes.len() && lines.len() < available {
+    while offset < hex_bytes.len() {
         let chunk_end = (offset + bytes_per_row).min(hex_bytes.len());
         let chunk = &hex_bytes[offset..chunk_end];
 
         let offset_str = format!("  {:04X}  ", offset);
 
-        // Hex bytes with midpoint gap
         let mut hex = String::with_capacity(bytes_per_row * 3 + 2);
         for (i, byte) in chunk.iter().enumerate() {
             hex.push_str(&format!("{:02X} ", byte));
@@ -995,13 +1034,11 @@ fn render_detail_pane(
                 hex.push(' ');
             }
         }
-        // Pad short rows
         let expected = bytes_per_row * 3 + 1;
         while hex.len() < expected {
             hex.push(' ');
         }
 
-        // ASCII
         let ascii: String = chunk
             .iter()
             .map(|&b| {
@@ -1013,7 +1050,7 @@ fn render_detail_pane(
             })
             .collect();
 
-        lines.push(Line::from(vec![
+        all_lines.push(Line::from(vec![
             Span::styled(offset_str, Style::default().fg(HEX_OFFSET)),
             Span::styled(hex, Style::default().fg(HEX_BYTE)),
             Span::styled(" \u{2502}", Style::default().fg(Color::Rgb(40, 55, 80))),
@@ -1024,39 +1061,164 @@ fn render_detail_pane(
         offset += bytes_per_row;
     }
 
+    // ── Apply scroll offset ──
+    let total_lines = all_lines.len();
+    let clamped_scroll = app.packets_detail_scroll.min(total_lines.saturating_sub(1));
+    let visible_lines: Vec<Line> = all_lines.iter().skip(clamped_scroll).take(available).cloned().collect();
+
     // ── Block ──
     let expert = expert_severity(pkt);
     let (ei, es) = expert_indicator(expert);
+    let mut title_spans = vec![
+        Span::styled(
+            " Protocol Detail ",
+            Style::default()
+                .fg(Color::Rgb(200, 180, 255))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" #{} ", selected_idx + 1),
+            Style::default().fg(MUTED),
+        ),
+        Span::styled(
+            format!("{} {} ", ei, proto_label),
+            es,
+        ),
+    ];
+    if total_lines > available {
+        let pct = if total_lines > 0 {
+            (clamped_scroll as f64 / total_lines.saturating_sub(available).max(1) as f64 * 100.0) as u8
+        } else {
+            0
+        };
+        title_spans.push(Span::styled(
+            format!(" [{}/{} {}%] ", clamped_scroll + 1, total_lines, pct),
+            Style::default().fg(Color::Rgb(120, 180, 255)),
+        ));
+    }
+    if !app.packets_detail_focused {
+        title_spans.push(Span::styled(
+            " (preview) ",
+            Style::default().fg(Color::Rgb(120, 160, 200)).add_modifier(Modifier::DIM),
+        ));
+    }
+    let border_color = if app.packets_detail_focused {
+        Color::Rgb(100, 160, 255) // bright blue when focused
+    } else {
+        DETAIL_BORDER // dim when in preview mode
+    };
     let block = Block::default()
-        .title(Line::from(vec![
-            Span::styled(
-                " Protocol Detail ",
-                Style::default()
-                    .fg(Color::Rgb(200, 180, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(" #{} ", selected_idx + 1),
-                Style::default().fg(MUTED),
-            ),
-            Span::styled(
-                format!("{} {} ", ei, proto_label),
-                es,
-            ),
-        ]))
+        .title(Line::from(title_spans))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(DETAIL_BORDER))
+        .border_style(Style::default().fg(border_color))
         .style(Style::default().bg(DETAIL_BG));
 
-    let detail = Paragraph::new(lines).block(block);
+    let detail = Paragraph::new(visible_lines).block(block);
     f.render_widget(detail, area);
+
+    // ── Scrollbar ──
+    if total_lines > available {
+        let sb_area = Rect {
+            x: area.x + area.width - 1,
+            y: area.y + 1,
+            width: 1,
+            height: area.height.saturating_sub(2),
+        };
+        let mut sb_state =
+            ScrollbarState::new(total_lines.saturating_sub(available)).position(clamped_scroll);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .style(Style::default().fg(SCROLLBAR)),
+            sb_area,
+            &mut sb_state,
+        );
+    }
+}
+
+// ─── Type picker popup ───────────────────────────────────────────────────────
+
+const TYPE_OPTIONS: &[PacketTypeFilter] = &[
+    PacketTypeFilter::All,
+    PacketTypeFilter::Tcp,
+    PacketTypeFilter::Udp,
+    PacketTypeFilter::Dns,
+];
+
+fn render_type_picker(f: &mut Frame, area: Rect, app: &App) {
+    // Centered popup ~30 chars wide, 6 + options rows tall
+    let popup = ratatui::layout::Rect {
+        x: area.x + area.width.saturating_sub(36) / 2,
+        y: area.y + area.height.saturating_sub(10) / 2,
+        width: 36,
+        height: 10,
+    };
+    f.render_widget(Clear, popup);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "  \u{25B8} Protocol Type ",
+            Style::default()
+                .fg(Color::Rgb(200, 220, 255))
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "  \u{2500}{0:\u{2500}>31}",
+            Style::default().fg(Color::Rgb(35, 50, 80)),
+        )),
+    ];
+
+    for opt in TYPE_OPTIONS {
+        let is_sel = *opt == app.packets_type_filter;
+        let prefix = if is_sel { "  \u{25C9} " } else { "  \u{25CB} " };
+        let color = match opt {
+            PacketTypeFilter::Dns => Color::Green,
+            PacketTypeFilter::Tcp => Color::Magenta,
+            PacketTypeFilter::Udp => Color::Blue,
+            PacketTypeFilter::All => Color::Rgb(170, 185, 210),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                prefix,
+                if is_sel {
+                    Style::default().fg(Color::Rgb(255, 200, 80))
+                } else {
+                    Style::default().fg(Color::Rgb(60, 75, 100))
+                },
+            ),
+            Span::styled(
+                opt.label(),
+                Style::default().fg(color).add_modifier(if is_sel { Modifier::BOLD } else { Modifier::empty() }),
+            ),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [ \u{2191}\u{2193} select | Enter apply | Esc close ]",
+        Style::default().fg(Color::Rgb(65, 80, 110)).add_modifier(Modifier::ITALIC),
+    )));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(60, 100, 180)))
+        .style(Style::default().bg(Color::Rgb(10, 14, 28)));
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 // ─── Footer ──────────────────────────────────────────────────────────────────
 
 fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let pause_label = if app.packets_paused { "Space:Resume" } else { "Space:Pause" };
-    let detail_label = if app.packets_detail_open { "d:Collapse" } else { "d:Expand" };
+    let detail_label = if app.packets_detail_open { "Enter:Collapse" } else { "Enter:Expand" };
+
+    let nav_label = if app.packets_detail_focused {
+        "\u{2191}\u{2193}:Detail"
+    } else {
+        "\u{2191}\u{2193}:Navigate"
+    };
 
     let mut hints = vec![
         Span::styled(
@@ -1064,30 +1226,26 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(Color::Yellow),
         ),
         Span::styled("  ", Style::default()),
-        Span::styled("Enter:Detail", Style::default().fg(Color::Yellow)),
-        Span::styled("  ", Style::default()),
         Span::styled(detail_label, Style::default().fg(Color::Yellow)),
-        Span::styled("  ", Style::default()),
-        Span::styled("c:Clear", Style::default().fg(Color::Yellow)),
-        Span::styled("  ", Style::default()),
-        Span::styled("\u{2191}\u{2193}:Navigate", Style::default().fg(Color::Yellow)),
-        Span::styled("  ", Style::default()),
-        Span::styled("PgUp/Dn:Scroll", Style::default().fg(Color::Yellow)),
     ];
 
+    if app.packets_detail_open {
+        hints.push(Span::styled("  ", Style::default()));
+        hints.push(Span::styled("Tab:Focus", Style::default().fg(Color::Yellow)));
+    }
+
+    hints.push(Span::styled("  ", Style::default()));
+    hints.push(Span::styled("c:Clear", Style::default().fg(Color::Yellow)));
+    hints.push(Span::styled("  ", Style::default()));
+    hints.push(Span::styled(nav_label, Style::default().fg(Color::Yellow)));
+    hints.push(Span::styled("  ", Style::default()));
+    hints.push(Span::styled("PgUp/Dn:Scroll", Style::default().fg(Color::Yellow)));
+
+    hints.push(Span::styled("  ", Style::default()));
+    hints.push(Span::styled("t:Type", Style::default().fg(Color::Yellow)));
     if !app.packets_filter.is_empty() {
         hints.push(Span::styled("  ", Style::default()));
-        hints.push(Span::styled("Esc:Clear filter", Style::default().fg(Color::Yellow)));
-        hints.push(Span::styled("  ", Style::default()));
-        hints.push(Span::styled(
-            format!("[FILTER: {}]", app.packets_filter),
-            Style::default()
-                .fg(Color::Rgb(255, 220, 100))
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else {
-        hints.push(Span::styled("  ", Style::default()));
-        hints.push(Span::styled("Type:Filter", Style::default().fg(Color::Rgb(60, 80, 110))));
+        hints.push(Span::styled("Esc:Clear", Style::default().fg(Color::Yellow)));
     }
 
     let footer = Paragraph::new(Line::from(hints))

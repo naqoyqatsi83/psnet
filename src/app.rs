@@ -107,8 +107,12 @@ pub struct App {
     // Packets tab state
     pub packets_scroll: usize,
     pub packets_filter: String,
+    pub packets_type_filter: PacketTypeFilter,
+    pub packets_type_picker: bool,
     pub packets_paused: bool,
     pub packets_detail_open: bool,
+    pub packets_detail_focused: bool,
+    pub packets_detail_scroll: usize,
 
     // Topology tab state
     pub topology_scroll: usize,
@@ -159,6 +163,9 @@ pub struct App {
     /// Transient status message shown briefly (text, when).
     pub status_message: Option<(String, Instant)>,
 
+    /// When true, all keystrokes go to the current tab's filter field.
+    pub filter_active: bool,
+
     // Internal
     pid_cache: PidCache,
     pub dns_cache: DnsCache,
@@ -167,6 +174,7 @@ pub struct App {
     // Background task results — avoid blocking UI thread
     bg_dns_servers: Arc<Mutex<Option<Vec<IpAddr>>>>,
     bg_dns_ipconfig: Arc<Mutex<Option<Vec<(IpAddr, String)>>>>,
+
 }
 
 impl App {
@@ -253,8 +261,12 @@ impl App {
 
             packets_scroll: 0,
             packets_filter: String::new(),
+            packets_type_filter: PacketTypeFilter::default(),
+            packets_type_picker: false,
             packets_paused: false,
             packets_detail_open: false,
+            packets_detail_focused: false,
+            packets_detail_scroll: 0,
 
             topology_scroll: 0,
 
@@ -290,6 +302,9 @@ impl App {
             bg_dns_servers: Arc::new(Mutex::new(None)),
             bg_dns_ipconfig: Arc::new(Mutex::new(None)),
             status_message: None,
+
+            filter_active: false,
+
         };
 
         // Issue a startup warning when the firewall is disabled due to
@@ -574,6 +589,7 @@ impl App {
             if self.networks_scanner.primary_ip.is_none() {
                 self.networks_scanner.primary_ip = self.network_scanner.local_ip;
             }
+            self.networks_scanner.arp_devices = self.network_scanner.devices.clone();
             self.networks_scanner.tick();
         }
 
@@ -787,6 +803,23 @@ impl App {
                 // Case-insensitive byte-by-byte comparison — no .to_lowercase() allocation
                 6 => a.process_name.bytes().map(|b| b.to_ascii_lowercase())
                     .cmp(b.process_name.bytes().map(|b| b.to_ascii_lowercase())),
+                // PID
+                7 => a.pid.cmp(&b.pid),
+                // Geo (country code — sort connections without remote first)
+                8 => {
+                    // Reuse the closure's access to self through the outer scope
+                    let geo_a = a.remote_addr
+                        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+                        .and_then(|ip| self.geoip.lookup(ip))
+                        .map(|g| g.code.to_string())
+                        .unwrap_or_default();
+                    let geo_b = b.remote_addr
+                        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+                        .and_then(|ip| self.geoip.lookup(ip))
+                        .map(|g| g.code.to_string())
+                        .unwrap_or_default();
+                    geo_a.cmp(&geo_b)
+                }
                 _ => std::cmp::Ordering::Equal,
             };
             if asc { ord } else { ord.reverse() }
@@ -1010,7 +1043,34 @@ impl App {
             return false;
         }
 
+        // Packets type picker popup: route all keys to the picker handler.
+        if self.bottom_tab == BottomTab::Packets && self.packets_type_picker {
+            self.handle_packets_key(code);
+            return false;
+        }
+
         match code {
+            // ── Filter-active mode: all keys go to current filter ──
+            KeyCode::Char(_) | KeyCode::Backspace if self.filter_active => {
+                self.filter_type_char(code);
+                return false;
+            }
+            KeyCode::Esc if self.filter_active => {
+                self.filter_deactivate();
+                return false;
+            }
+            KeyCode::Enter if self.filter_active => {
+                self.filter_active = false;
+                return false;
+            }
+            // ── Activate filter mode ──
+            KeyCode::Char('/') => {
+                if self.filter_supported() {
+                    self.filter_active = true;
+                    return false;
+                }
+            }
+            // ── Global shortcuts ──
             KeyCode::Char('q') | KeyCode::Char('Q') => {
                 if !self.incognito {
                     self.alert_engine.save_alerts();
@@ -1025,7 +1085,11 @@ impl App {
                 return true;
             }
             KeyCode::Tab => {
-                self.bottom_tab = self.bottom_tab.next();
+                if self.bottom_tab == BottomTab::Packets && self.packets_detail_open {
+                    self.packets_detail_focused = !self.packets_detail_focused;
+                } else {
+                    self.bottom_tab = self.bottom_tab.next();
+                }
             }
             KeyCode::BackTab => {
                 self.bottom_tab = self.bottom_tab.prev();
@@ -1147,6 +1211,21 @@ impl App {
                         self.bluetooth_expanded = !self.bluetooth_expanded;
                         None
                     }
+                    crate::ui::networks::NetworksRow::Network { net } => {
+                        let cat_str = crate::ui::networks::category_label(&net.category);
+                        Some(DetailKind::Network(crate::types::NetworkDetail {
+                            network: net.network.clone(),
+                            netmask: net.netmask.clone(),
+                            gateway: net.gateway.clone(),
+                            category: cat_str.to_string(),
+                            name: net.name.clone(),
+                            iface: net.iface.clone(),
+                            metric: net.metric,
+                            devices: net.devices.iter().map(|d| {
+                                (d.ip.to_string(), d.hostname.clone().unwrap_or_default(), d.is_online)
+                            }).collect(),
+                        }))
+                    }
                     crate::ui::networks::NetworksRow::Device { device, .. } => {
                         Some(DetailKind::Device((*device).clone()))
                     }
@@ -1215,8 +1294,12 @@ impl App {
                 return;
             }
             BottomTab::Packets => {
-                // Enter toggles the detail pane instead of opening a popup
+                // Enter toggles the detail pane instead of opening a popup.
+                // Default focus is on the list so arrows navigate packets as preview.
                 self.packets_detail_open = !self.packets_detail_open;
+                if self.packets_detail_open {
+                    self.packets_detail_focused = false;
+                }
                 return;
             }
             BottomTab::Topology => None,
@@ -1232,13 +1315,15 @@ impl App {
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 self.hide_localhost_conn = !self.hide_localhost_conn;
             }
-            // Sort keys mapped to displayed column order:
-            // 1=Process, 2=Remote Host, 3=Service, 4=State, 5=Local
-            KeyCode::Char('1') => self.toggle_sort(6),
-            KeyCode::Char('2') => self.toggle_sort(3),
-            KeyCode::Char('3') => self.toggle_sort(4),
-            KeyCode::Char('4') => self.toggle_sort(5),
-            KeyCode::Char('5') => self.toggle_sort(2),
+            // Sort by display column number:
+            // 1=PID, 2=Process, 3=Remote, 4=Geo, 5=Service, 6=State, 7=Local
+            KeyCode::Char('1') => self.toggle_sort(7),  // PID
+            KeyCode::Char('2') => self.toggle_sort(6),  // Process
+            KeyCode::Char('3') => self.toggle_sort(3),  // Remote
+            KeyCode::Char('4') => self.toggle_sort(8),  // Geo
+            KeyCode::Char('5') => self.toggle_sort(4),  // Service
+            KeyCode::Char('6') => self.toggle_sort(5),  // State
+            KeyCode::Char('7') => self.toggle_sort(2),  // Local
             // Block selected connection's process via firewall
             KeyCode::Char('b') | KeyCode::Char('B') => {
                 if !self.firewall_manager.enabled {
@@ -1257,15 +1342,6 @@ impl App {
                             .unwrap_or_else(|| conn.process_name.clone());
                         self.firewall_manager.block_app(&path);
                     }
-                }
-            }
-            KeyCode::Backspace => { self.filter_text.pop(); }
-            KeyCode::Esc => { self.filter_text.clear(); }
-            KeyCode::Char(c) => {
-                if c == 'f' || c == 'F' {
-                    // 'f' starts filter mode
-                } else {
-                    self.filter_text.push(c);
                 }
             }
             _ => {}
@@ -1339,11 +1415,6 @@ impl App {
             KeyCode::Char('3') => {
                 self.servers_scanner.sort_column = 3;
                 self.servers_scanner.sort_ascending = !self.servers_scanner.sort_ascending;
-            }
-            KeyCode::Backspace => { self.servers_scanner.filter_text.pop(); }
-            KeyCode::Esc => { self.servers_scanner.filter_text.clear(); }
-            KeyCode::Char(c) if !c.is_ascii_digit() => {
-                self.servers_scanner.filter_text.push(c);
             }
             _ => {}
         }
@@ -1449,17 +1520,9 @@ impl App {
     }
 
     fn handle_firewall_key(&mut self, code: KeyCode) {
-        // When disabled, only allow scrolling (already handled by main handler)
-        // and filtering.  Block all action keys — no false sense of control.
+        // When disabled, block all action keys — no false sense of control.
+        // Filtering is handled globally via filter_active mode.
         if !self.firewall_manager.enabled {
-            match code {
-                KeyCode::Backspace => { self.firewall_manager.filter_text.pop(); }
-                KeyCode::Esc => { self.firewall_manager.filter_text.clear(); }
-                KeyCode::Char(c) => {
-                    self.firewall_manager.filter_text.push(c);
-                }
-                _ => {}
-            }
             return;
         }
 
@@ -1499,11 +1562,6 @@ impl App {
                     let path = data_dir.join("psnet").join("usage_export.csv");
                     let _ = self.usage_tracker.export_csv(&path.to_string_lossy());
                 }
-            }
-            KeyCode::Backspace => { self.firewall_manager.filter_text.pop(); }
-            KeyCode::Esc => { self.firewall_manager.filter_text.clear(); }
-            KeyCode::Char(c) => {
-                self.firewall_manager.filter_text.push(c);
             }
             _ => {}
         }
@@ -1575,7 +1633,7 @@ impl App {
             if net.category == NetworkCategory::Bluetooth {
                 bt += net.devices.len();
             } else {
-                non_bt += net.devices.len();
+                non_bt += 1; // one row per network, not per device
             }
         }
         non_bt + if bt > 0 { 1 } else { 0 } + if self.bluetooth_expanded { bt } else { 0 }
@@ -1584,6 +1642,7 @@ impl App {
     fn handle_networks_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.networks_scanner.arp_devices = self.network_scanner.devices.clone();
                 self.networks_scanner.start_scan();
             }
             KeyCode::Char('b') | KeyCode::Char('B') => {
@@ -1594,28 +1653,49 @@ impl App {
     }
 
     fn handle_packets_key(&mut self, code: KeyCode) {
+        // Type picker popup intercepts keys
+        if self.packets_type_picker {
+            match code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.packets_type_filter = match self.packets_type_filter {
+                        PacketTypeFilter::All => PacketTypeFilter::Dns,
+                        PacketTypeFilter::Tcp => PacketTypeFilter::All,
+                        PacketTypeFilter::Udp => PacketTypeFilter::Tcp,
+                        PacketTypeFilter::Dns => PacketTypeFilter::Udp,
+                    };
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.packets_type_filter = self.packets_type_filter.next();
+                }
+                KeyCode::Enter => {
+                    self.packets_type_picker = false;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.packets_type_picker = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char(' ') => {
                 self.packets_paused = !self.packets_paused;
-            }
-            KeyCode::Char('d') | KeyCode::Char('D') => {
-                self.packets_detail_open = !self.packets_detail_open;
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 if let Ok(mut lock) = self.sniffer.snippets.lock() {
                     lock.clear();
                 }
             }
-            KeyCode::Backspace => { self.packets_filter.pop(); }
+            KeyCode::Char('t') | KeyCode::Char('T') => {
+                self.packets_type_picker = true;
+            }
             KeyCode::Esc => {
-                if !self.packets_filter.is_empty() {
-                    self.packets_filter.clear();
+                if self.packets_detail_focused {
+                    self.packets_detail_focused = false;
                 } else {
                     self.packets_detail_open = false;
                 }
-            }
-            KeyCode::Char(c) => {
-                self.packets_filter.push(c);
             }
             _ => {}
         }
@@ -1647,6 +1727,53 @@ impl App {
         }
     }
 
+    // ─── Filter helpers ───────────────────────────────────────────────────────
+
+    /// Returns true if the current tab supports text filtering.
+    fn filter_supported(&self) -> bool {
+        matches!(self.bottom_tab,
+            BottomTab::Connections | BottomTab::Servers | BottomTab::Packets
+            | BottomTab::Firewall
+        )
+    }
+
+    /// Route a character to the current tab's filter.
+    fn filter_type_char(&mut self, code: KeyCode) {
+        let c = match code {
+            KeyCode::Char(c) => c,
+            KeyCode::Backspace => {
+                match self.bottom_tab {
+                    BottomTab::Connections => { self.filter_text.pop(); }
+                    BottomTab::Servers => { self.servers_scanner.filter_text.pop(); }
+                    BottomTab::Packets => { self.packets_filter.pop(); }
+                    BottomTab::Firewall => { self.firewall_manager.filter_text.pop(); }
+                    _ => {}
+                }
+                return;
+            }
+            _ => return,
+        };
+        match self.bottom_tab {
+            BottomTab::Connections => self.filter_text.push(c),
+            BottomTab::Servers => self.servers_scanner.filter_text.push(c),
+            BottomTab::Packets => self.packets_filter.push(c),
+            BottomTab::Firewall => self.firewall_manager.filter_text.push(c),
+            _ => {}
+        }
+    }
+
+    /// Exit filter mode and clear the filter text.
+    fn filter_deactivate(&mut self) {
+        self.filter_active = false;
+        match self.bottom_tab {
+            BottomTab::Connections => self.filter_text.clear(),
+            BottomTab::Servers => self.servers_scanner.filter_text.clear(),
+            BottomTab::Packets => self.packets_filter.clear(),
+            BottomTab::Firewall => self.firewall_manager.filter_text.clear(),
+            _ => {}
+        }
+    }
+
     fn scroll_up(&mut self, n: usize) {
         match self.bottom_tab {
             BottomTab::Connections => {
@@ -1671,7 +1798,13 @@ impl App {
                 self.networks_scroll = self.networks_scroll.saturating_sub(n);
             }
             BottomTab::Packets => {
-                self.packets_scroll = self.packets_scroll.saturating_sub(n);
+                if self.packets_type_picker {
+                    // type picker popup owns scroll, don't scroll packets list
+                } else if self.packets_detail_focused {
+                    self.packets_detail_scroll = self.packets_detail_scroll.saturating_sub(n);
+                } else {
+                    self.packets_scroll = self.packets_scroll.saturating_sub(n);
+                }
             }
             BottomTab::Topology => {
                 self.topology_scroll = self.topology_scroll.saturating_sub(n);
@@ -1704,7 +1837,13 @@ impl App {
                 self.networks_scroll += n;
             }
             BottomTab::Packets => {
-                self.packets_scroll += n;
+                if self.packets_type_picker {
+                    // type picker popup owns scroll, don't scroll packets list
+                } else if self.packets_detail_focused {
+                    self.packets_detail_scroll += n;
+                } else {
+                    self.packets_scroll += n;
+                }
             }
             BottomTab::Topology => {
                 self.topology_scroll += n;
@@ -1734,7 +1873,11 @@ impl App {
                 self.networks_scroll = 0;
             }
             BottomTab::Packets => {
-                self.packets_scroll = 0;
+                if self.packets_detail_focused {
+                    self.packets_detail_scroll = 0;
+                } else {
+                    self.packets_scroll = 0;
+                }
             }
             BottomTab::Topology => {
                 self.topology_scroll = 0;
@@ -1764,8 +1907,12 @@ impl App {
                 self.networks_scroll = self.networks_display_row_count().saturating_sub(1);
             }
             BottomTab::Packets => {
-                let total = self.sniffer.recent(2000).len();
-                self.packets_scroll = total.saturating_sub(1);
+                if self.packets_detail_focused {
+                    self.packets_detail_scroll = usize::MAX; // clamped at render time
+                } else {
+                    let total = self.sniffer.recent(2000).len();
+                    self.packets_scroll = total.saturating_sub(1);
+                }
             }
             BottomTab::Topology => {
                 // scroll to last remote host
@@ -1939,17 +2086,19 @@ impl App {
     fn handle_header_click(&mut self, x: u16, frame_w: u16) {
         match self.bottom_tab {
             BottomTab::Connections => {
-                // Columns: Process(20), Remote Host(Min22), Geo(7), Service(14), State(14), Local(7)
-                let col = column_from_x(x, &[20, 0, 7, 14, 14, 7], frame_w);
-                // Map display column to sort column index used by toggle_sort:
-                // 0→Process(6), 1→RemoteHost(3), 2→Geo(skip), 3→Service(4), 4→State(5), 5→Local(2)
+                // Display columns: PID(6), Process(16), Remote(flex), Geo(7), Service(12), State(12), Local(7)
+                let col = column_from_x(x, &[6, 16, 0, 7, 12, 12, 7], frame_w);
+                // Map display column index to sort_column: 0→PID(7), 1→Process(6), 2→Remote(3),
+                // 3→Geo(8), 4→Service(4), 5→State(5), 6→Local(2)
                 if let Some(sort_col) = match col {
-                    Some(0) => Some(6), // Process
-                    Some(1) => Some(3), // Remote Host
-                    Some(3) => Some(4), // Service
-                    Some(4) => Some(5), // State
-                    Some(5) => Some(2), // Local port
-                    _ => None,          // Geo not sortable
+                    Some(0) => Some(7),
+                    Some(1) => Some(6),
+                    Some(2) => Some(3),
+                    Some(3) => Some(8),
+                    Some(4) => Some(4),
+                    Some(5) => Some(5),
+                    Some(6) => Some(2),
+                    _ => None,
                 } {
                     self.toggle_sort(sort_col);
                 }

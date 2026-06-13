@@ -2,6 +2,7 @@
 name = "psnet"
 version = "1.1.2"
 edition = "2021"
+rust-version = "1.80"
 description = "A beautiful real-time TUI network monitor — 9 tabs, GeoIP, device discovery, firewall, topology & more"
 license = "MIT"
 repository = "https://github.com/naqoyqatsi83/psnet"

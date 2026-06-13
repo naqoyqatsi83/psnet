@@ -16,8 +16,11 @@ use crate::types::NetworkCategory;
 /// Represents a virtual row in the networks display.
 #[derive(Clone)]
 pub enum NetworksRow<'a> {
+    Network {
+        net: &'a crate::network::networks::RemoteNetwork,
+    },
     Device {
-        net_name: &'a str,
+        net_name: String,
         category: &'a NetworkCategory,
         device: &'a crate::types::LanDevice,
     },
@@ -27,57 +30,46 @@ pub enum NetworksRow<'a> {
     },
 }
 
-/// Build the virtual row list: non-BT devices (sorted), then BT header, then BT devices if expanded.
+/// Build the virtual row list: network-level rows, then Bluetooth section.
 pub fn build_display_rows<'a>(app: &'a App) -> Vec<NetworksRow<'a>> {
     let scanner = &app.networks_scanner;
 
-    let mut main_flat: Vec<(&str, &NetworkCategory, &crate::types::LanDevice)> = Vec::new();
-    let mut bt_flat: Vec<(&str, &NetworkCategory, &crate::types::LanDevice)> = Vec::new();
+    let mut main_nets: Vec<&crate::network::networks::RemoteNetwork> = Vec::new();
+    let mut bt_devices: Vec<&crate::types::LanDevice> = Vec::new();
 
     for net in &scanner.networks {
-        for dev in &net.devices {
-            if net.category == NetworkCategory::Bluetooth {
-                bt_flat.push((&net.name, &net.category, dev));
-            } else {
-                main_flat.push((&net.name, &net.category, dev));
-            }
+        if net.category == NetworkCategory::Bluetooth {
+            bt_devices.extend(&net.devices);
+        } else {
+            main_nets.push(net);
         }
     }
 
-    // Sort both lists
+    // Sort main networks
     let sort_col = app.networks_sort_column;
     let sort_asc = app.networks_sort_ascending;
-    let sorter = |a: &(&str, &NetworkCategory, &crate::types::LanDevice),
-                  b: &(&str, &NetworkCategory, &crate::types::LanDevice)| {
+    main_nets.sort_by(|a, b| {
         let ord = match sort_col {
-            0 => a.0.cmp(b.0),
-            1 => category_label(a.1).cmp(&category_label(b.1)),
-            2 => b.2.is_online.cmp(&a.2.is_online),
-            3 => a.2.ip.to_string().cmp(&b.2.ip.to_string()),
-            4 => a.2.hostname.as_deref().unwrap_or("~").cmp(&b.2.hostname.as_deref().unwrap_or("~")),
-            5 => a.2.mac.cmp(&b.2.mac),
-            6 => a.2.vendor.as_deref().unwrap_or("~").cmp(&b.2.vendor.as_deref().unwrap_or("~")),
-            7 => a.2.open_ports.cmp(&b.2.open_ports),
-            _ => std::cmp::Ordering::Equal,
+            0 => a.network.cmp(&b.network),
+            1 => category_label(&a.category).cmp(&category_label(&b.category)),
+            2 => a.gateway.as_deref().unwrap_or("").cmp(&b.gateway.as_deref().unwrap_or("")),
+            3 => a.netmask.cmp(&b.netmask),
+            4 => a.devices.len().cmp(&b.devices.len()),
+            5 => a.iface.cmp(&b.iface),
+            _ => a.name.cmp(&b.name),
         };
         if sort_asc { ord.reverse() } else { ord }
-    };
-    main_flat.sort_by(sorter);
-    bt_flat.sort_by(sorter);
+    });
 
     let mut rows = Vec::new();
 
-    // Main (non-BT) devices
-    for (net_name, category, device) in &main_flat {
-        rows.push(NetworksRow::Device {
-            net_name,
-            category,
-            device,
-        });
+    // Main (non-BT) networks — single row per network
+    for net in &main_nets {
+        rows.push(NetworksRow::Network { net });
     }
 
     // Bluetooth section
-    let bt_count = bt_flat.len();
+    let bt_count = bt_devices.len();
     if bt_count > 0 {
         rows.push(NetworksRow::BluetoothHeader {
             count: bt_count,
@@ -85,10 +77,10 @@ pub fn build_display_rows<'a>(app: &'a App) -> Vec<NetworksRow<'a>> {
         });
 
         if app.bluetooth_expanded {
-            for (net_name, category, device) in &bt_flat {
+            for device in &bt_devices {
                 rows.push(NetworksRow::Device {
-                    net_name,
-                    category,
+                    net_name: device.ip.to_string(),
+                    category: &NetworkCategory::Bluetooth,
                     device,
                 });
             }
@@ -130,14 +122,12 @@ pub fn draw_networks(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let header = Row::new(vec![
-        Cell::from(Span::styled(format!("Network{}", si(0)), hdr_style)),
+        Cell::from(Span::styled(format!("Network (CIDR){}", si(0)), hdr_style)),
         Cell::from(Span::styled(format!("Type{}", si(1)), hdr_style)),
-        Cell::from(Span::styled(format!("Status{}", si(2)), hdr_style)),
-        Cell::from(Span::styled(format!("IP Address{}", si(3)), hdr_style)),
-        Cell::from(Span::styled(format!("Hostname{}", si(4)), hdr_style)),
-        Cell::from(Span::styled(format!("MAC{}", si(5)), hdr_style)),
-        Cell::from(Span::styled(format!("Vendor{}", si(6)), hdr_style)),
-        Cell::from(Span::styled(format!("Ports{}", si(7)), hdr_style)),
+        Cell::from(Span::styled(format!("Gateway{}", si(2)), hdr_style)),
+        Cell::from(Span::styled(format!("Netmask{}", si(3)), hdr_style)),
+        Cell::from(Span::styled(format!("Devices{}", si(4)), hdr_style)),
+        Cell::from(Span::styled(format!("Interface{}", si(5)), hdr_style)),
     ])
     .height(1)
     .style(Style::default().bg(Color::Rgb(18, 25, 42)));
@@ -169,20 +159,62 @@ pub fn draw_networks(f: &mut Frame, area: Rect, app: &App) {
                         Cell::from(""),
                         Cell::from(""),
                         Cell::from(Span::styled(
-                            if *expanded { "b:collapse" } else { "b:expand / Enter" }.to_string(),
+                            if *expanded { "b:collapse" } else { "b:expand" }.to_string(),
                             Style::default().fg(Color::Rgb(60, 80, 110)),
                         )),
-                        Cell::from(""),
-                        Cell::from(""),
                         Cell::from(""),
                     ])
                     .style(Style::default().bg(bg))
                 }
-                NetworksRow::Device { net_name, category, device } => {
+                NetworksRow::Network { net } => {
+                    let cat_label = category_label(&net.category);
+                    let cat_color = category_color(&net.category);
+                    let gateway = net.gateway.as_deref().unwrap_or("\u{2014}");
+                    let dev_count = net.devices.len();
+
+                    let row_bg = if is_selected {
+                        Color::Rgb(25, 45, 85)
+                    } else {
+                        Color::Rgb(14, 18, 30)
+                    };
+
+                    Row::new(vec![
+                        Cell::from(Span::styled(
+                            net.network.clone(),
+                            Style::default().fg(Color::Rgb(100, 220, 255)).add_modifier(Modifier::BOLD),
+                        )),
+                        Cell::from(Span::styled(
+                            cat_label.to_string(),
+                            Style::default().fg(cat_color).add_modifier(Modifier::BOLD),
+                        )),
+                        Cell::from(Span::styled(
+                            gateway.to_string(),
+                            Style::default().fg(if net.gateway.is_some() {
+                                Color::Rgb(180, 200, 120)
+                            } else {
+                                Color::Rgb(60, 65, 80)
+                            }),
+                        )),
+                        Cell::from(Span::styled(
+                            net.netmask.clone(),
+                            Style::default().fg(Color::Rgb(150, 160, 180)),
+                        )),
+                        Cell::from(Span::styled(
+                            dev_count.to_string(),
+                            Style::default().fg(Color::Rgb(130, 200, 140)),
+                        )),
+                        Cell::from(Span::styled(
+                            net.iface.clone(),
+                            Style::default().fg(Color::Rgb(140, 160, 200)),
+                        )),
+                    ])
+                    .style(Style::default().bg(row_bg))
+                }
+                NetworksRow::Device { net_name: _, category, device } => {
                     let cat_label = category_label(category);
                     let cat_color = category_color(category);
 
-                    let (status_icon, status_color) = if device.is_online {
+                    let (status_icon, _status_color) = if device.is_online {
                         ("\u{25cf} ONLINE", Color::Rgb(80, 200, 120))
                     } else {
                         ("\u{25cb} OFFLINE", Color::Rgb(100, 100, 120))
@@ -207,20 +239,12 @@ pub fn draw_networks(f: &mut Frame, area: Rect, app: &App) {
 
                     Row::new(vec![
                         Cell::from(Span::styled(
-                            (*net_name).to_string(),
-                            Style::default().fg(Color::Rgb(140, 160, 200)),
+                            format!("  {} {}", status_icon, device.ip),
+                            Style::default().fg(Color::Rgb(100, 180, 255)),
                         )),
                         Cell::from(Span::styled(
                             cat_label.to_string(),
                             Style::default().fg(cat_color).add_modifier(Modifier::BOLD),
-                        )),
-                        Cell::from(Span::styled(
-                            status_icon,
-                            Style::default().fg(status_color).add_modifier(Modifier::BOLD),
-                        )),
-                        Cell::from(Span::styled(
-                            device.ip.to_string(),
-                            Style::default().fg(Color::Rgb(100, 180, 255)),
                         )),
                         Cell::from(Span::styled(
                             hostname_display,
@@ -276,21 +300,19 @@ pub fn draw_networks(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let hint = Line::from(Span::styled(
-        " s:scan  b:bluetooth  Enter:details",
+        " s:scan  b:bluetooth  Enter:network detail",
         Style::default().fg(Color::Rgb(55, 70, 100)),
     ));
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(24),  // Network
+            Constraint::Length(22),  // Network (CIDR)
             Constraint::Length(10),  // Type
-            Constraint::Length(10),  // Status
-            Constraint::Length(18),  // IP Address
-            Constraint::Min(14),     // Hostname
-            Constraint::Length(18),  // MAC
-            Constraint::Length(20),  // Vendor
-            Constraint::Length(22),  // Ports
+            Constraint::Min(18),     // Gateway
+            Constraint::Length(16),  // Netmask
+            Constraint::Length(9),   // Devices
+            Constraint::Length(16),  // Interface
         ],
     )
     .header(header)
@@ -323,7 +345,7 @@ pub fn draw_networks(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn category_label(cat: &NetworkCategory) -> &'static str {
+pub fn category_label(cat: &NetworkCategory) -> &'static str {
     match cat {
         NetworkCategory::Vpn => "VPN",
         NetworkCategory::Docker => "Docker",

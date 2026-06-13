@@ -270,17 +270,34 @@ fn sniffer_thread(
 
 // ─── Packet parsing ──────────────────────────────────────────────────────────
 
+/// Find the offset of the IPv4 header in a captured packet by checking
+/// for the EtherType marker (0x0800) at known positions for different
+/// link-layer types. Falls back to checking for raw IP at offset 0.
+fn find_ipv4_offset(data: &[u8]) -> Option<usize> {
+    // Ethernet II: 14-byte header, EtherType at bytes 12-13
+    if data.len() > 14 && data[12] == 0x08 && data[13] == 0x00 {
+        return Some(14);
+    }
+    // Linux SLL (cooked): 16-byte header, EtherType at bytes 14-15
+    if data.len() > 16 && data[14] == 0x08 && data[15] == 0x00 {
+        return Some(16);
+    }
+    // Raw IP / unknown link layer: check version nibble at offset 0
+    if data.len() > 20 && (data[0] >> 4) == 4 {
+        return Some(0);
+    }
+    None
+}
+
 fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
     let data = pkt.data;
     if data.len() < 20 {
         return None;
     }
 
-    // Check for Ethernet header (14 bytes) and EtherType IPv4 (0x0800)
-    let ip_start = if data.len() >= 14 && (data[12] == 0x08 && data[13] == 0x00) {
-        14
-    } else {
-        0
+    let ip_start = match find_ipv4_offset(data) {
+        Some(off) => off,
+        None => return None,
     };
 
     if data.len() < ip_start + 20 {

@@ -28,10 +28,10 @@ pub fn draw_connections(f: &mut Frame, area: Rect, app: &App) {
 
     // ── Columns: PID | Process | Remote Host | Geo | Service | State | Local ──
     let header = Row::new(vec![
-        Cell::from(Span::styled("PID", hdr_style)),
+        Cell::from(Span::styled(format!("PID{}", sort_ind(7)), hdr_style)),
         Cell::from(Span::styled(format!("Process{}", sort_ind(6)), hdr_style)),
         Cell::from(Span::styled(format!("Remote Host{}", sort_ind(3)), hdr_style)),
-        Cell::from(Span::styled("Geo", hdr_style)),
+        Cell::from(Span::styled(format!("Geo{}", sort_ind(8)), hdr_style)),
         Cell::from(Span::styled(format!("Service{}", sort_ind(4)), hdr_style)),
         Cell::from(Span::styled(format!("State{}", sort_ind(5)), hdr_style)),
         Cell::from(Span::styled(format!("Local{}", sort_ind(2)), hdr_style)),
