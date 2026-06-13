@@ -121,10 +121,11 @@ impl NetworkScanner {
             let vendor = Some(mac_vendor_lookup(&mac_str).unwrap_or("Unknown").to_string());
 
             // Preserve first_seen for known devices; update last_seen.
-            let (first_seen, last_seen) = if let Some(known) = existing.get(mac_str.as_str()) {
-                (known.first_seen, now)
+            // Also preserve cumulative byte counters and speed data.
+            let (first_seen, last_seen, bytes_sent, bytes_received, tick_sent, tick_received, speed_sent, speed_received) = if let Some(known) = existing.get(mac_str.as_str()) {
+                (known.first_seen, now, known.bytes_sent, known.bytes_received, known.tick_sent, known.tick_received, known.speed_sent, known.speed_received)
             } else {
-                (now, now)
+                (now, now, 0, 0, 0, 0, 0.0, 0.0)
             };
 
             devices.push(LanDevice {
@@ -138,12 +139,12 @@ impl NetworkScanner {
                 custom_name: self.custom_labels.get(&mac_str).cloned(),
                 discovery_info: upd.discovery_info,
                 open_ports: upd.open_ports,
-                bytes_sent: 0,
-                bytes_received: 0,
-                tick_sent: 0,
-                tick_received: 0,
-                speed_sent: 0.0,
-                speed_received: 0.0,
+                bytes_sent,
+                bytes_received,
+                tick_sent,
+                tick_received,
+                speed_sent,
+                speed_received,
             });
         }
         self.devices = devices.clone();
