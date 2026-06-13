@@ -298,13 +298,13 @@ pub fn draw_devices(f: &mut Frame, area: Rect, app: &App) {
                 .map(|d| {
                     let name = d.custom_name.as_deref().or(d.hostname.as_deref());
                     match name {
-                        Some(n) => format!(" r:rename \"{}\"", n),
-                        None => " r:rename  s:scan".to_string(),
+                        Some(n) => format!(" r:rename \"{}\"  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send", n),
+                        None => " r:rename  s:scan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string(),
                     }
                 })
-                .unwrap_or_else(|| " r:rename  s:scan".to_string())
+                .unwrap_or_else(|| " r:rename  s:scan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string())
         } else {
-            " s:scan".to_string()
+            " s:scan  1:IP 2:Name 3:MAC 4:Vendor 5:Ports 6:First 7:Last 8:Recv 9:Send".to_string()
         };
         Line::from(Span::styled(selected_name, Style::default().fg(Color::Rgb(55, 70, 100))))
     };

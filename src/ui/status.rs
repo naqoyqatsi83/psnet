@@ -117,10 +117,12 @@ pub fn draw_key_hints(f: &mut Frame, area: Rect, app: &App) {
             key_span("s", "Scan Now"),
             key_span("r", "Rename"),
             key_span("o", &format!("Offline:{}", if app.hide_offline_devices { "Hidden" } else { "Shown" })),
+            key_span("1-9", "Sort"),
         ],
         BottomTab::Networks => vec![
             key_span("s", "Scan Now"),
             key_span("b", &format!("{}", if app.bluetooth_expanded { "Collapse BT" } else { "Expand BT" })),
+            key_span("1-6", "Sort"),
         ],
         BottomTab::Packets => vec![
             key_span("Space", &format!("{}", if app.packets_paused { "Resume" } else { "Pause" })),

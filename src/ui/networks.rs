@@ -300,7 +300,7 @@ pub fn draw_networks(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let hint = Line::from(Span::styled(
-        " s:scan  b:bluetooth  Enter:network detail",
+        " s:scan  b:bluetooth  Enter:network detail  1:Network 2:Type 3:Gateway 4:Netmask 5:Devices 6:Interface",
         Style::default().fg(Color::Rgb(55, 70, 100)),
     ));
 

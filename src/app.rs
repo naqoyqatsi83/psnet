@@ -915,6 +915,24 @@ impl App {
         self.sort_connections();
     }
 
+    fn toggle_device_sort(&mut self, col: usize) {
+        if self.device_sort_column == col {
+            self.device_sort_ascending = !self.device_sort_ascending;
+        } else {
+            self.device_sort_column = col;
+            self.device_sort_ascending = true;
+        }
+    }
+
+    fn toggle_networks_sort(&mut self, col: usize) {
+        if self.networks_sort_column == col {
+            self.networks_sort_ascending = !self.networks_sort_ascending;
+        } else {
+            self.networks_sort_column = col;
+            self.networks_sort_ascending = true;
+        }
+    }
+
     // ─── Filtering ───────────────────────────────────────────────────────
 
     /// Returns (app_name, is_blocked, conn_count) sorted for the Firewall app list.
@@ -1700,6 +1718,17 @@ impl App {
                     self.renaming_device = Some(real_idx);
                 }
             }
+            // Sort by column: 1=IP, 2=Hostname, 3=MAC, 4=Vendor, 5=Ports,
+            // 6=First Seen, 7=Last Seen, 8=Recv, 9=Sent
+            KeyCode::Char('1') => self.toggle_device_sort(1),
+            KeyCode::Char('2') => self.toggle_device_sort(2),
+            KeyCode::Char('3') => self.toggle_device_sort(3),
+            KeyCode::Char('4') => self.toggle_device_sort(4),
+            KeyCode::Char('5') => self.toggle_device_sort(5),
+            KeyCode::Char('6') => self.toggle_device_sort(6),
+            KeyCode::Char('7') => self.toggle_device_sort(7),
+            KeyCode::Char('8') => self.toggle_device_sort(8),
+            KeyCode::Char('9') => self.toggle_device_sort(9),
             _ => {}
         }
     }
@@ -1727,6 +1756,13 @@ impl App {
             KeyCode::Char('b') | KeyCode::Char('B') => {
                 self.bluetooth_expanded = !self.bluetooth_expanded;
             }
+            // Sort by column: 1=Network, 2=Type, 3=Gateway, 4=Netmask, 5=Devices, 6=Interface
+            KeyCode::Char('1') => self.toggle_networks_sort(0),
+            KeyCode::Char('2') => self.toggle_networks_sort(1),
+            KeyCode::Char('3') => self.toggle_networks_sort(2),
+            KeyCode::Char('4') => self.toggle_networks_sort(3),
+            KeyCode::Char('5') => self.toggle_networks_sort(4),
+            KeyCode::Char('6') => self.toggle_networks_sort(5),
             _ => {}
         }
     }
