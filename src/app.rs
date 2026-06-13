@@ -556,21 +556,21 @@ impl App {
                 }
             }
 
-            // Per-connection bandwidth from packets
+            // Per-connection bandwidth from packets.
+            // Always key by src→dst order (don't flip based on direction, since
+            // the sniffer's direction detection may use a wrong local IP when
+            // virtual interfaces like Docker are listed first by `ip addr`).
             for pkt in &new_packets {
-                let (local_ip, local_port, remote_ip, remote_port) = match pkt.direction {
-                    PacketDirection::Outbound => (pkt.src_ip, pkt.src_port, pkt.dst_ip, pkt.dst_port),
-                    PacketDirection::Inbound => (pkt.dst_ip, pkt.dst_port, pkt.src_ip, pkt.src_port),
-                };
+                let is_inbound = pkt.direction == PacketDirection::Inbound;
                 let key = ConnKey {
                     proto: pkt.protocol,
-                    local_addr: local_ip,
-                    local_port,
-                    remote_addr: Some(remote_ip),
-                    remote_port: Some(remote_port),
+                    local_addr: pkt.src_ip,
+                    local_port: pkt.src_port,
+                    remote_addr: Some(pkt.dst_ip),
+                    remote_port: Some(pkt.dst_port),
                 };
                 let entry = self.conn_bandwidth.entry(key).or_insert((0, 0));
-                if pkt.direction == PacketDirection::Inbound {
+                if is_inbound {
                     entry.0 += pkt.payload_size as u64;
                 } else {
                     entry.1 += pkt.payload_size as u64;
@@ -652,12 +652,31 @@ impl App {
             }
         }
 
-        // Overlay per-connection bandwidth from packet capture
+        // Overlay per-connection bandwidth from packet capture.
+        // Try both src→dst and dst→src key orderings since the sniffer's
+        // direction detection may not match the app's local IP perspective
+        // (e.g. when virtual interfaces like Docker are present).
         for conn in &mut self.connections {
             let key = conn.key();
             if let Some(&(rx, tx)) = self.conn_bandwidth.get(&key) {
                 conn.bytes_received = rx;
                 conn.bytes_sent = tx;
+            } else if let (Some(raddr), Some(rport)) = (conn.remote_addr, conn.remote_port) {
+                // Try reversed: sniffer stored as src→dst, but connection is dst→src
+                let rev_key = ConnKey {
+                    proto: conn.proto,
+                    local_addr: raddr,
+                    local_port: rport,
+                    remote_addr: Some(conn.local_addr),
+                    remote_port: Some(conn.local_port),
+                };
+                if let Some(&(rx, tx)) = self.conn_bandwidth.get(&rev_key) {
+                    // Reversed: stored rx (data TO stored_key's local = connection's remote)
+                    // is data SENT by local (= tx). Stored tx (data FROM stored_key's local)
+                    // is data RECEIVED by local (= rx).
+                    conn.bytes_received = tx;
+                    conn.bytes_sent = rx;
+                }
             }
         }
 
