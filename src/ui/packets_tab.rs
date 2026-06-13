@@ -233,15 +233,9 @@ fn matches_filter(pkt: &PacketSnippet, filter: &str, app: &App) -> bool {
             if pkt.protocol != ConnProto::Tcp {
                 return false;
             }
-            if pkt.src_port == 53 || pkt.dst_port == 53 {
-                return false;
-            }
         }
         PacketTypeFilter::Udp => {
             if pkt.protocol != ConnProto::Udp {
-                return false;
-            }
-            if pkt.src_port == 53 || pkt.dst_port == 53 {
                 return false;
             }
         }
