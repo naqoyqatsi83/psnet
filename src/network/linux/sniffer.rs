@@ -209,7 +209,7 @@ fn sniffer_thread(
 
     let cap_builder = cap_builder
         .promisc(false)
-        .snaplen(256)  // only need headers + a few payload bytes
+        .snaplen(512)  // only need headers + some payload; actual size computed from ip_total_len
         .timeout(100)
         .buffer_size(4 * 1024 * 1024);
 
@@ -226,8 +226,10 @@ fn sniffer_thread(
         }
     };
 
-    // BPF filter: IPv4 TCP/UDP only, with payload
-    let _ = cap.filter("ip and (tcp or udp)", true);
+    // BPF filter: IPv4 TCP/UDP only — applied at kernel level to minimize irrelevant packets
+    if let Err(e) = cap.filter("ip and (tcp or udp)", true) {
+        let _ = set_error(&error_msg, &format!("BPF filter error: {}", e));
+    }
 
     // Clear any previous error — we're live
     if let Ok(mut e) = error_msg.lock() {
@@ -340,7 +342,9 @@ fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
     let ip_total_len = u16::from_be_bytes([data[ip_start + 2], data[ip_start + 3]]);
     let ip_id = u16::from_be_bytes([data[ip_start + 4], data[ip_start + 5]]);
 
-    let (src_port, dst_port, payload_offset, tcp_flags, tcp_seq, tcp_ack_num, tcp_window) = match protocol {
+    let ip_payload_len = (ip_total_len as usize).saturating_sub(ihl);
+
+    let (src_port, dst_port, payload_offset, tcp_flags, tcp_seq, tcp_ack_num, tcp_window, payload_size) = match protocol {
         6 => {
             // TCP
             let tcp_offset = ip_start + ihl;
@@ -364,7 +368,8 @@ fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
                 data[tcp_offset + 11],
             ]);
             let win = u16::from_be_bytes([data[tcp_offset + 14], data[tcp_offset + 15]]);
-            (sp, dp, tcp_offset + tcp_hdr_len, flags, seq, ack, win)
+            let tcp_payload = ip_payload_len.saturating_sub(tcp_hdr_len);
+            (sp, dp, tcp_offset + tcp_hdr_len, flags, seq, ack, win, tcp_payload)
         }
         17 => {
             // UDP
@@ -374,15 +379,15 @@ fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
             }
             let sp = u16::from_be_bytes([data[udp_offset], data[udp_offset + 1]]);
             let dp = u16::from_be_bytes([data[udp_offset + 2], data[udp_offset + 3]]);
-            (sp, dp, udp_offset + 8, 0u8, 0u32, 0u32, 0u16)
+            let udp_payload = ip_payload_len.saturating_sub(8);
+            (sp, dp, udp_offset + 8, 0u8, 0u32, 0u32, 0u16, udp_payload)
         }
         _ => return None,
     };
 
-    // Extract payload and snippet
+    // Extract payload (truncated by snaplen) for snippet extraction
     let has_payload = payload_offset < data.len() && data.len() > payload_offset;
     let payload = if has_payload { &data[payload_offset..] } else { &[] };
-    let payload_size = payload.len();
 
     // Extract printable ASCII snippet (up to 200 chars)
     let snippet = if !payload.is_empty() {
@@ -392,9 +397,9 @@ fn parse_packet(pkt: &PcapPacket, local_ip_v4: u32) -> Option<PacketSnippet> {
     };
 
     // Filter: drop packets with no actual payload (pure ACKs, empty UDP).
-    // Check `payload.is_empty()` (actual bytes) not `snippet.is_empty()` (readable text)
-    // so encrypted TCP segments (TLS, SSH, etc.) still pass through for bandwidth tracking.
-    if payload.is_empty() {
+    // Use payload_size computed from ip_total_len (not truncated payload.len())
+    // so TLS/SSH data still passes through for bandwidth tracking.
+    if payload_size == 0 {
         if protocol == 6 {
             let is_syn = tcp_flags & 0x02 != 0;
             let is_fin = tcp_flags & 0x01 != 0;

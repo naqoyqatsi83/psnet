@@ -22,6 +22,7 @@ pub enum PortScanEvent {
 
 const PORT_TIMEOUT_MS: u64 = 150;
 const CONCURRENCY: usize = 200;
+const HOST_CONCURRENCY: usize = 5;
 
 pub const COMMON_PORTS: &[(u16, &str)] = &[
     (21, "FTP"), (22, "SSH"), (23, "Telnet"), (25, "SMTP"),
@@ -36,7 +37,7 @@ pub const COMMON_PORTS: &[(u16, &str)] = &[
     (9200, "Elasticsearch"), (11211, "Memcached"), (27017, "MongoDB"),
 ];
 
-/// Scan a list of IPs sequentially (one at a time).
+/// Scan a list of IPs in parallel batches of HOST_CONCURRENCY.
 /// Emits MultiProgress for overall status and individual Complete per IP.
 pub fn start_multi_scan(
     ips: Vec<IpAddr>,
@@ -44,22 +45,35 @@ pub fn start_multi_scan(
     events: Arc<Mutex<VecDeque<(IpAddr, PortScanEvent)>>>,
     cancel: Arc<AtomicBool>,
 ) {
-    let ports: Vec<u16> = if full {
+    let ports: Arc<Vec<u16>> = Arc::new(if full {
         (1..=65535).collect()
     } else {
         COMMON_PORTS.iter().map(|(p, _)| *p).collect()
-    };
+    });
     let total = ips.len();
     std::thread::spawn(move || {
-        for (i, ip) in ips.iter().enumerate() {
+        for batch_start in (0..total).step_by(HOST_CONCURRENCY) {
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            // Emit overall progress
-            if let Ok(mut q) = events.lock() {
-                q.push_back((*ip, PortScanEvent::MultiProgress { current: i + 1, total }));
-            }
-            do_scan(*ip, &ports, events.clone(), cancel.clone());
+            let batch_end = (batch_start + HOST_CONCURRENCY).min(total);
+            std::thread::scope(|s| {
+                for i in batch_start..batch_end {
+                    let ip = ips[i];
+                    let events = events.clone();
+                    let cancel = cancel.clone();
+                    let ports = Arc::clone(&ports);
+                    s.spawn(move || {
+                        if let Ok(mut q) = events.lock() {
+                            q.push_back((ip, PortScanEvent::MultiProgress {
+                                current: i + 1,
+                                total,
+                            }));
+                        }
+                        do_scan(ip, &ports, events, cancel);
+                    });
+                }
+            });
         }
     });
 }

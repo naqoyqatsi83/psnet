@@ -602,10 +602,12 @@ impl App {
                 }
             }
             let snif = &self.sniffer;
+            let bw_conns = self.conn_bandwidth.len();
             self.status_message = Some((
-                format!("pkt:{} mch:{} pcap_all:{} ipv4:{} snif_err:{:?}", total_pkts, matched,
+                format!("pkt:{} mch:{} pcap_all:{} ipv4:{} bw_conns:{} snif_err:{:?}", total_pkts, matched,
                     snif.dbg_pcap_all.load(std::sync::atomic::Ordering::Relaxed),
                     snif.dbg_pcap_ipv4.load(std::sync::atomic::Ordering::Relaxed),
+                    bw_conns,
                     snif.get_error()),
                 std::time::Instant::now(),
             ));
